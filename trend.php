@@ -25,7 +25,7 @@ include 'menu.php';
                 console.warn('⚠️ ECharts CDN加载失败，尝试本地文件');
                 // CDN失败，尝试本地文件
                 const localScript = document.createElement('script');
-                localScript.src = './js/echarts.min.js';
+                localScript.src = '/usr/plugins/VisitorLoggerPro/js/echarts.min.js';
                 localScript.onload = () => {
                     console.log('✅ ECharts 本地文件加载成功');
                     resolve('local');
@@ -730,6 +730,7 @@ include 'menu.php';
     }
 
     .page-header {
+        width: 100%;
         background: #fff;
         border-radius: 12px;
         padding: 20px;
@@ -777,6 +778,7 @@ include 'menu.php';
     }
 
     .trend-section {
+        width: 100%;
         background: #fff;
         border-radius: 12px;
         padding: 24px;
@@ -785,6 +787,7 @@ include 'menu.php';
     }
 
     .controls-section {
+        width: 100%;
         background: #fff;
         border-radius: 12px;
         padding: 20px;
@@ -892,6 +895,7 @@ include 'menu.php';
 
     /* 指标说明区域样式 */
     .metrics-explanation {
+        width: 100%;
         background: #fff;
         border-radius: 12px;
         padding: 24px;

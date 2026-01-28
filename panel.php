@@ -721,6 +721,7 @@ $routeStats = array_values($routeStats);
     }
 
     .page-header {
+        width: 100%;
         background: #fff;
         border-radius: 12px;
         padding: 20px;
