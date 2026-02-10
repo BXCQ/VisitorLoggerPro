@@ -61,77 +61,109 @@ $countryStats = array_values($countryStats);
 $routeStats = array_values($routeStats);
 ?>
 
-<!-- 智能加载ECharts：优先CDN，失败时自动回退到本地 -->
 <script>
-    // 加载ECharts的智能回退机制
-    function loadECharts() {
-        return new Promise((resolve, reject) => {
-            // 首先尝试CDN
-            const cdnScript = document.createElement('script');
-            cdnScript.src = 'https://cdn.jsdelivr.net/npm/echarts@5.4.3/dist/echarts.min.js';
-            cdnScript.onload = () => {
-                console.log('✅ ECharts CDN加载成功');
-                resolve('cdn');
-            };
-            cdnScript.onerror = () => {
-                console.warn('⚠️ ECharts CDN加载失败，尝试本地文件');
-                // CDN失败，尝试本地文件
-                const localScript = document.createElement('script');
-                localScript.src = './js/echarts.min.js';
-                localScript.onload = () => {
-                    console.log('✅ ECharts 本地文件加载成功');
-                    resolve('local');
-                };
-                localScript.onerror = () => {
-                    console.error('❌ ECharts 本地文件也加载失败');
-                    reject('both_failed');
-                };
-                document.head.appendChild(localScript);
-            };
-            document.head.appendChild(cdnScript);
-        });
-    }
+// 为每个资源添加超时加载机制
+function loadScriptWithTimeout(src, timeout = 2000) {
+    return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => {
+            reject(new Error('Timeout'));
+        }, timeout);
 
-    // 加载Flatpickr的智能回退机制
-    function loadFlatpickr() {
-        return new Promise((resolve, reject) => {
-            // 首先尝试CDN
-            const cdnScript = document.createElement('script');
-            cdnScript.src = 'https://cdn.jsdelivr.net/npm/flatpickr';
-            cdnScript.onload = () => {
-                console.log('✅ Flatpickr CDN加载成功');
-                // 加载CSS
-                const link = document.createElement('link');
-                link.rel = 'stylesheet';
-                link.href = 'https://cdn.jsdelivr.net/npm/flatpickr/dist/flatpickr.min.css';
-                document.head.appendChild(link);
-                resolve('cdn');
-            };
-            cdnScript.onerror = () => {
-                console.warn('⚠️ Flatpickr CDN加载失败');
-                reject('cdn_failed');
-            };
-            document.head.appendChild(cdnScript);
-        });
-    }
-
-    // 并行加载所有资源
-    Promise.allSettled([loadECharts(), loadFlatpickr()]).then(results => {
-        console.log('📊 资源加载结果:', results);
-        // 触发DOM加载完成事件（如果还没触发）
-        if (document.readyState === 'loading') {
-            document.addEventListener('DOMContentLoaded', initializeApp);
-        } else {
-            initializeApp();
-        }
+        const script = document.createElement('script');
+        script.src = src;
+        script.onload = () => {
+            clearTimeout(timer);
+            resolve();
+        };
+        script.onerror = () => {
+            clearTimeout(timer);
+            reject(new Error('Failed to load'));
+        };
+        document.head.appendChild(script);
     });
+}
 
-    function initializeApp() {
-        // 这里会在后面的代码中定义具体的初始化逻辑
-        if (typeof window.startChartInitialization === 'function') {
-            window.startChartInitialization();
-        }
+// 加载ECharts的智能回退机制
+function loadECharts() {
+    return new Promise((resolve, reject) => {
+        // 首先尝试CDN，2秒超时
+        loadScriptWithTimeout('https://cdn.jsdelivr.net/npm/echarts@5.4.3/dist/echarts.min.js', 2000)
+        .then(() => {
+            console.log('✅ ECharts CDN加载成功');
+            resolve('cdn');
+        })
+        .catch(() => {
+            console.warn('⚠️ ECharts CDN加载失败，尝试本地文件');
+            // CDN失败，立即尝试本地文件
+            const localScript = document.createElement('script');
+            localScript.src = '../usr/plugins/VisitorLoggerPro/js/echarts.min.js';
+        localScript.onload = () => {
+            console.log('✅ ECharts 本地文件加载成功');
+            resolve('local');
+        };
+        localScript.onerror = () => {
+            console.error('❌ ECharts 本地文件也加载失败');
+            reject('both_failed');
+        };
+        document.head.appendChild(localScript);
+        });
+    });
+}
+
+// 加载Flatpickr的智能回退机制
+function loadFlatpickr() {
+    return new Promise((resolve, reject) => {
+        // 首先尝试CDN，2秒超时
+        loadScriptWithTimeout('https://cdn.jsdelivr.net/npm/flatpickr', 2000)
+        .then(() => {
+            console.log('✅ Flatpickr CDN加载成功');
+            // 加载CDN的CSS
+            const link = document.createElement('link');
+            link.rel = 'stylesheet';
+        link.href = 'https://cdn.jsdelivr.net/npm/flatpickr/dist/flatpickr.min.css';
+        document.head.appendChild(link);
+        resolve('cdn');
+        })
+        .catch(() => {
+            console.warn('⚠️ Flatpickr CDN加载失败，尝试本地文件');
+            // CDN失败，立即尝试本地文件
+            const localScript = document.createElement('script');
+            localScript.src = '../usr/plugins/VisitorLoggerPro/js/flatpickr.js';
+        localScript.onload = () => {
+            console.log('✅ Flatpickr 本地文件加载成功');
+            // 加载本地CSS
+            const cssLink = document.createElement('link');
+            cssLink.rel = 'stylesheet';
+        cssLink.href = '../usr/plugins/VisitorLoggerPro/css/flatpickr.min.css';
+        document.head.appendChild(cssLink);
+        resolve('local');
+        };
+        localScript.onerror = () => {
+            console.error('❌ Flatpickr 本地文件也加载失败');
+            reject('both_failed');
+        };
+        document.head.appendChild(localScript);
+        });
+    });
+}
+
+// 并行加载所有资源
+Promise.allSettled([loadECharts(), loadFlatpickr()]).then(results => {
+    console.log('📊 资源加载结果:', results);
+    // 确保DOM加载完成
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', initializeApp);
+    } else {
+        initializeApp();
     }
+});
+
+function initializeApp() {
+    // 确保在资源加载完成后执行初始化
+    if (typeof window.startChartInitialization === 'function') {
+        window.startChartInitialization();
+    }
+}
 </script>
 
 <script>

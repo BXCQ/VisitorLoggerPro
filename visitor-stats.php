@@ -89,44 +89,71 @@ $this->need('component/header.php');
 
 <!-- 智能加载ECharts：优先CDN，失败时自动回退到本地 -->
 <script>
-    // 加载ECharts的智能回退机制
-    function loadEChartsWithFallback() {
-        return new Promise((resolve, reject) => {
-            // 首先尝试CDN
-            const cdnScript = document.createElement('script');
-            cdnScript.src = 'https://cdn.jsdelivr.net/npm/echarts@5.4.3/dist/echarts.min.js';
-            cdnScript.onload = () => {
-                console.log('✅ ECharts CDN加载成功');
-                resolve('cdn');
-            };
-            cdnScript.onerror = () => {
-                console.warn('⚠️ ECharts CDN加载失败，尝试本地文件');
-                // CDN失败，尝试本地文件
-                const localScript = document.createElement('script');
-                localScript.src = './js/echarts.min.js';
-                localScript.onload = () => {
-                    console.log('✅ ECharts 本地文件加载成功');
-                    resolve('local');
-                };
-                localScript.onerror = () => {
-                    console.error('❌ ECharts 本地文件也加载失败');
-                    reject('both_failed');
-                };
-                document.head.appendChild(localScript);
-            };
-            document.head.appendChild(cdnScript);
-        });
-    }
+// 添加超时机制的脚本加载函数
+function loadScriptWithTimeout(src, timeout = 2000) {
+    return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => {
+            reject(new Error('Timeout'));
+        }, timeout);
 
-    // 立即开始加载
-    loadEChartsWithFallback().then(result => {
-        console.log('📊 ECharts加载结果:', result);
-        // 设置全局标记，表示ECharts已准备就绪
-        window.echartsReady = true;
-    }).catch(error => {
-        console.error('❌ ECharts加载完全失败:', error);
-        window.echartsReady = false;
+        const script = document.createElement('script');
+        script.src = src;
+        script.onload = () => {
+            clearTimeout(timer);
+            resolve();
+        };
+        script.onerror = () => {
+            clearTimeout(timer);
+            reject(new Error('Failed to load'));
+        };
+        document.head.appendChild(script);
     });
+}
+
+// 优化后的ECharts加载函数
+function loadEChartsWithFallback() {
+    return new Promise((resolve, reject) => {
+        // 优先尝试CDN，2秒超时
+        loadScriptWithTimeout('https://cdn.jsdelivr.net/npm/echarts@5.4.3/dist/echarts.min.js', 2000)
+        .then(() => {
+            console.log('✅ ECharts CDN加载成功');
+            resolve('cdn');
+        })
+        .catch(() => {
+            console.warn('⚠️ ECharts CDN加载超时或失败，立即尝试本地文件');
+            // CDN失败，立即加载本地文件
+            const localScript = document.createElement('script');
+            localScript.src = '../usr/plugins/VisitorLoggerPro/js/echarts.min.js';
+        localScript.onload = () => {
+            console.log('✅ ECharts 本地文件加载成功');
+            resolve('local');
+        };
+        localScript.onerror = () => {
+            console.error('❌ ECharts 本地文件加载失败');
+            reject('both_failed');
+        };
+        document.head.appendChild(localScript);
+        });
+    });
+}
+
+// 立即开始加载
+loadEChartsWithFallback().then(result => {
+    console.log('📊 ECharts加载完成:', result);
+    // 设置全局标记，表示ECharts已准备就绪
+    window.echartsReady = true;
+    // 触发应用初始化（如果需要）
+    if (typeof window.startTrendInitialization === 'function') {
+        window.startTrendInitialization();
+    }
+}).catch(error => {
+    console.error('❌ ECharts加载完全失败:', error);
+    window.echartsReady = false;
+    // 可选：显示错误提示
+    const errorDiv = document.createElement('div');
+    errorDiv.innerHTML = '<div style="color: red; padding: 10px; background: #ffebee; border: 1px solid #ff8a8a;">ECharts加载失败，请检查网络或联系管理员</div>';
+document.body.appendChild(errorDiv);
+});
 </script>
 
 <!-- aside -->
