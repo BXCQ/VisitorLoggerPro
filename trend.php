@@ -1203,8 +1203,8 @@ function initializeApp() {
                     <div class="metric-content">
                         <h4>PV (页面浏览量)</h4>
                         <div class="metric-description">
-                            <p><strong>概念：</strong>Page View，即页面浏览量，每次页面被加载时记录一次。</p>
-                            <p><strong>统计方法：</strong>统计访客日志表中的所有访问记录总数，不去重，每次页面访问都计数。</p>
+                            <p><strong>概念：</strong>Page View，每次页面被成功统计一次记为一次浏览。</p>
+                            <p><strong>统计方法：</strong>日志表记录总数。启用「前端埋点」后，通常只有执行了 JS 的真实浏览器才会上报，口径接近 Umami / Matomo / 百度统计。</p>
                             <p><strong>获取数据：</strong><code>SELECT COUNT(*) FROM visitor_log WHERE time BETWEEN ? AND ?</code></p>
                         </div>
                     </div>
@@ -1218,7 +1218,7 @@ function initializeApp() {
                         <h4>独立IP数</h4>
                         <div class="metric-description">
                             <p><strong>概念：</strong>指定时间范围内访问过网站的不同IP地址数量，同一IP在统计周期内只计算一次。</p>
-                            <p><strong>统计方法：</strong>按IP地址去重统计，获取唯一IP地址的数量。</p>
+                            <p><strong>统计方法：</strong>按IP地址去重统计。此指标仍基于网络地址，与主流工具的「访客」不是同一概念。</p>
                             <p><strong>获取数据：</strong><code>SELECT COUNT(DISTINCT ip) FROM visitor_log WHERE time BETWEEN ? AND ?</code></p>
                         </div>
                     </div>
@@ -1231,9 +1231,9 @@ function initializeApp() {
                     <div class="metric-content">
                         <h4>独立访客数 (UV)</h4>
                         <div class="metric-description">
-                            <p><strong>概念：</strong>Unique Visitor，通过IP地址+User-Agent组合识别的独立访客数量，比单纯IP统计更精准。</p>
-                            <p><strong>统计方法：</strong>将访客的IP地址和浏览器标识(User-Agent)组合作为唯一标识符进行去重统计。</p>
-                            <p><strong>获取数据：</strong><code>SELECT COUNT(DISTINCT CONCAT(ip, '|', user_agent)) FROM visitor_log WHERE time BETWEEN ? AND ?</code></p>
+                            <p><strong>概念：</strong>Unique Visitor。前端埋点模式下使用一年期第一方 Cookie（visitor_id），与 Umami / Matomo / 百度统计同类。</p>
+                            <p><strong>统计方法：</strong>优先 <code>COUNT(DISTINCT visitor_id)</code>；旧数据无 Cookie 时回退为 IP+User-Agent。</p>
+                            <p><strong>获取数据：</strong><code>COALESCE(visitor_id, CONCAT('legacy:', ip, user_agent))</code> 去重</p>
                         </div>
                     </div>
                 </div>
@@ -1245,9 +1245,9 @@ function initializeApp() {
                     <div class="metric-content">
                         <h4>访问次数 (会话数)</h4>
                         <div class="metric-description">
-                            <p><strong>概念：</strong>基于时间间隔的会话识别，同一访客在30分钟内的连续访问算作一次会话。</p>
-                            <p><strong>统计方法：</strong>按IP+User-Agent分组，当访问间隔超过30分钟时认为是新的会话开始。</p>
-                            <p><strong>获取数据：</strong>复杂SQL查询，使用窗口函数计算时间间隔，识别会话边界并统计会话总数。</p>
+                            <p><strong>概念：</strong>Session。前端埋点使用 30 分钟滚动会话 Cookie（session_id），与主流工具常见 30 分钟超时一致。</p>
+                            <p><strong>统计方法：</strong>优先按 session_id 去重；旧数据无会话 Cookie 时，按同一 IP 间隔超过 30 分钟切分会话。</p>
+                            <p><strong>获取数据：</strong><code>COUNT(DISTINCT session_id)</code> + 旧数据窗口函数回退</p>
                         </div>
                     </div>
                 </div>
@@ -1256,11 +1256,11 @@ function initializeApp() {
             <div class="technical-notes">
                 <h4>🔧 技术实现要点</h4>
                 <ul>
-                    <li><strong>数据库兼容性：</strong>系统支持MySQL 5.5+到8.0+，对于不支持窗口函数的旧版本会自动回退到简化算法</li>
-                    <li><strong>会话算法：</strong>采用智能会话识别算法，30分钟无访问后的下次访问被视为新会话</li>
-                    <li><strong>隐私保护：</strong>IP地址在显示时进行匿名化处理，仅显示前两段以保护访客隐私</li>
-                    <li><strong>性能优化：</strong>针对大数据量场景优化查询性能，支持按小时和按天双维度统计</li>
-                    <li><strong>数据精度：</strong>User-Agent字段增强了访客识别精度，避免共享IP环境下的统计偏差</li>
+                    <li><strong>推荐模式：</strong>插件设置中选择「前端埋点」，即可按 Umami / Matomo 思路用 Cookie 识别访客与会话</li>
+                    <li><strong>与主流工具差异：</strong>本插件仍自托管日志，不做抽样；广告拦截可能导致略低于百度统计等第三方脚本</li>
+                    <li><strong>爬虫过滤：</strong>前端模式天然过滤多数不执行 JS 的爬虫，服务端另有可配置 UA 黑名单</li>
+                    <li><strong>兼容旧数据：</strong>历史 IP+UA 记录仍可统计，会与 Cookie 口径自动合并回退</li>
+                    <li><strong>隐私：</strong>使用第一方 Cookie，不跨站追踪；IP 展示仍做匿名化</li>
                 </ul>
             </div>
         </div>

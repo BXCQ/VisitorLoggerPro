@@ -9,7 +9,7 @@ if (!defined('__TYPECHO_ROOT_DIR__')) {
  * 
  * @package VisitorLoggerPro
  * @author 璇
- * @version 2.2.11
+ * @version 2.3.0
  * @link https://blog.ybyq.wang
  * @since 1.2.0
  */
@@ -78,11 +78,16 @@ class VisitorLoggerPro_Plugin implements Typecho_Plugin_Interface
             `region` VARCHAR(100),
             `city` VARCHAR(100),
             `user_agent` TEXT,
+            `visitor_id` VARCHAR(64) DEFAULT NULL,
+            `session_id` VARCHAR(64) DEFAULT NULL,
+            `referrer` VARCHAR(512) DEFAULT NULL,
             `time` DATETIME DEFAULT NULL,
             KEY `idx_time` (`time`),
             KEY `idx_time_country` (`time`, `country`),
             KEY `idx_ip` (`ip`),
-            KEY `idx_time_ip` (`time`, `ip`)
+            KEY `idx_time_ip` (`time`, `ip`),
+            KEY `idx_time_visitor` (`time`, `visitor_id`),
+            KEY `idx_time_session` (`time`, `session_id`)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8;";
         // ********如果提示UNSIGNED 或 AUTO_INCREMENT 或 ENGINE的相关错误，将上述代码替换成以下代码********
         //$sql = "CREATE TABLE IF NOT EXISTS `{$prefix}visitor_log` (
@@ -97,26 +102,7 @@ class VisitorLoggerPro_Plugin implements Typecho_Plugin_Interface
 
         try {
             $db->query($sql);
-
-            // 检查是否需要添加user_agent字段（用于升级现有安装）
-            try {
-                $columns = $db->fetchAll("SHOW COLUMNS FROM `{$prefix}visitor_log`");
-                $hasUserAgent = false;
-                foreach ($columns as $column) {
-                    if ($column['Field'] === 'user_agent') {
-                        $hasUserAgent = true;
-                        break;
-                    }
-                }
-
-                if (!$hasUserAgent) {
-                    $db->query("ALTER TABLE `{$prefix}visitor_log` ADD COLUMN `user_agent` TEXT AFTER `city`");
-                }
-            } catch (Exception $e) {
-                // 如果添加字段失败，继续运行（可能是权限问题或数据库不支持）
-            }
-
-            // 为已有安装补齐索引（新安装建表时已带索引，此处幂等）
+            self::ensureSchema($db, $prefix);
             VisitorLoggerPro_DbOptimize::ensureIndexes($db, $prefix);
         } catch (Exception $e) {
             throw new Typecho_Plugin_Exception('创建访客日志表或IP地址记录表失败: ' . $e->getMessage());
@@ -129,11 +115,68 @@ class VisitorLoggerPro_Plugin implements Typecho_Plugin_Interface
         // Plugin::factory 内部会将 Widget\Archive 归一为 Widget_Archive
         Typecho_Plugin::factory('Widget_Archive')->handle = array('VisitorLoggerPro_Plugin', 'handleTemplate');
         Typecho_Plugin::factory('Widget_Archive')->header = array('VisitorLoggerPro_Plugin', 'logVisitorInfo');
+        Typecho_Plugin::factory('Widget_Archive')->footer = array('VisitorLoggerPro_Plugin', 'injectTracker');
 
         Helper::addPanel(1, 'VisitorLoggerPro/panel.php', '访客日志', '查看访客日志', 'administrator');
         Helper::addPanel(2, 'VisitorLoggerPro/trend.php', '趋势分析', '访客趋势分析', 'administrator');
 
-        return '插件已激活，访客日志功能已启用。';
+        return '插件已激活，访客日志功能已启用。请在设置中选择「前端埋点」以获得接近主流统计工具的口径。';
+    }
+
+    /**
+     * 补齐 visitor_log 新字段（幂等，升级安装可安全调用）
+     *
+     * @param mixed  $db
+     * @param string $prefix
+     * @return void
+     */
+    public static function ensureSchema($db = null, $prefix = null)
+    {
+        try {
+            if ($db === null) {
+                $db = Typecho_Db::get();
+            }
+            if ($prefix === null) {
+                $prefix = $db->getPrefix();
+            }
+
+            $columns = $db->fetchAll("SHOW COLUMNS FROM `{$prefix}visitor_log`");
+            $fields = array();
+            foreach ($columns as $column) {
+                $fields[$column['Field']] = true;
+            }
+
+            if (empty($fields['user_agent'])) {
+                $db->query("ALTER TABLE `{$prefix}visitor_log` ADD COLUMN `user_agent` TEXT AFTER `city`");
+            }
+            if (empty($fields['visitor_id'])) {
+                $db->query("ALTER TABLE `{$prefix}visitor_log` ADD COLUMN `visitor_id` VARCHAR(64) DEFAULT NULL AFTER `user_agent`");
+            }
+            if (empty($fields['session_id'])) {
+                $db->query("ALTER TABLE `{$prefix}visitor_log` ADD COLUMN `session_id` VARCHAR(64) DEFAULT NULL AFTER `visitor_id`");
+            }
+            if (empty($fields['referrer'])) {
+                $db->query("ALTER TABLE `{$prefix}visitor_log` ADD COLUMN `referrer` VARCHAR(512) DEFAULT NULL AFTER `session_id`");
+            }
+        } catch (Exception $e) {
+            error_log('VisitorLoggerPro ensureSchema: ' . $e->getMessage());
+        }
+    }
+
+    /**
+     * 当前统计模式：server | client | hybrid
+     * 未配置时保持 server，避免升级后突然改变既有口径
+     */
+    public static function getTrackingMode()
+    {
+        try {
+            $opts = Helper::options()->plugin('VisitorLoggerPro');
+            if (isset($opts->trackingMode) && in_array($opts->trackingMode, array('server', 'client', 'hybrid'), true)) {
+                return $opts->trackingMode;
+            }
+        } catch (Exception $e) {
+        }
+        return 'server';
     }
 
     /**
@@ -184,19 +227,68 @@ class VisitorLoggerPro_Plugin implements Typecho_Plugin_Interface
      */
     public static function config(Typecho_Widget_Helper_Form $form)
     {
+        /* 统计模式：接近 Umami / Matomo / 百度统计 */
+        $trackingMode = new Typecho_Widget_Helper_Form_Element_Radio(
+            'trackingMode',
+            array(
+                'client' => _t('前端埋点（推荐，接近 Umami / Matomo / 百度统计）'),
+                'hybrid' => _t('混合：服务端记录 + 前端 Cookie 标识'),
+                'server' => _t('仅服务端（旧版 IP+UA 口径）')
+            ),
+            'client',
+            _t('统计模式'),
+            _t('前端埋点：通过第一方 Cookie 识别访客与会话，不执行 JS 的爬虫通常不会被计入，口径更接近主流工具。<br>' .
+                '混合：服务端仍记日志，同时写入 Cookie 中的 visitor_id / session_id（由页脚脚本维护 Cookie，不重复上报）。<br>' .
+                '仅服务端：保持旧行为。升级后若未保存过本选项，运行时仍按「仅服务端」以免突然改口径；建议保存一次并选用「前端埋点」。<br>' .
+                '<strong>升级到 2.3.0 后请先禁用再启用本插件一次</strong>，以注册页脚埋点钩子；然后选择「前端埋点」并保存。')
+        );
+        $form->addInput($trackingMode);
+
         /* botlist设置 */
         $bots = array(
+            'baiduspider=>百度',
             'baidu=>百度',
+            'googlebot=>谷歌',
             'google=>谷歌',
             'sogou=>搜狗',
             'youdao=>有道',
             'soso=>搜搜',
+            'bingbot=>必应',
             'bing=>必应',
             'yahoo=>雅虎',
-            '360=>360搜索'
+            'slurp=>雅虎',
+            '360spider=>360搜索',
+            'yandex=>Yandex',
+            'duckduckbot=>DuckDuckGo',
+            'applebot=>Apple',
+            'petalbot=>Petal',
+            'bytespider=>字节',
+            'ahrefsbot=>Ahrefs',
+            'semrushbot=>Semrush',
+            'mj12bot=>Majestic',
+            'dotbot=>DotBot',
+            'gptbot=>GPTBot',
+            'claudebot=>Claude',
+            'facebookexternalhit=>Facebook',
+            'twitterbot=>Twitter',
+            'ia_archiver=>Alexa',
+            'scrapy=>Scrapy',
+            'python-requests=>Python',
+            'go-http-client=>Go',
+            'headlesschrome=>Headless',
+            'phantomjs=>PhantomJS',
+            'selenium=>Selenium',
+            'curl=>curl',
+            'wget=>wget'
         );
 
-        $botList = new Typecho_Widget_Helper_Form_Element_Textarea('botList', null, implode("\n", $bots), _t('蜘蛛记录设置'), _t('请按照格式填入蜘蛛信息，英文关键字不能超过16个字符'));
+        $botList = new Typecho_Widget_Helper_Form_Element_Textarea(
+            'botList',
+            null,
+            implode("\n", $bots),
+            _t('蜘蛛过滤设置'),
+            _t('命中关键字的访问将不计入统计。格式：英文关键字=>显示名，每行一条。前端埋点模式下多数爬虫本就不会执行脚本，此列表作为服务端/采集接口的二次过滤。')
+        );
 
         $form->addInput($botList);
 
@@ -376,42 +468,127 @@ class VisitorLoggerPro_Plugin implements Typecho_Plugin_Interface
         return (($ip_long & $mask_long) == ($subnet_long & $mask_long));
     }
 
-    public static function logVisitorInfo($header = null, $archive = null)
+    /**
+     * 统一写入访问记录（服务端钩子与前端 collect 共用）
+     *
+     * @param array $data
+     * @return string skipped|recorded
+     */
+    public static function recordVisit(array $data)
     {
         if (self::isBot()) {
-            return;
+            return 'skipped_bot';
         }
-        $route = explode('?', $_SERVER['REQUEST_URI'] ?? '/')[0];
-        if (strpos($route, "admin") !== false) {
-            return;
+
+        $route = isset($data['route']) ? (string)$data['route'] : '/';
+        $route = explode('?', $route)[0];
+        if ($route === '') {
+            $route = '/';
         }
-        $db = Typecho_Db::get();
-        $prefix = $db->getPrefix();
-        $ip_string = self::getIpAddress();
-        if (strpos($ip_string, ',') !== false) {
-            $ip_string = str_replace(' ', '', $ip_string);
-            $parts = explode(',', $ip_string);
+        if (stripos($route, 'admin') !== false) {
+            return 'skipped_admin';
+        }
+
+        $ipString = self::getIpAddress();
+        if (strpos($ipString, ',') !== false) {
+            $ipString = str_replace(' ', '', $ipString);
+            $parts = explode(',', $ipString);
             $ip = $parts[0];
         } else {
-            $ip = $ip_string;
+            $ip = $ipString;
         }
 
-        // 检查IP是否在忽略列表中
         if (self::isIgnoredIP($ip)) {
-            return;
+            return 'skipped_ip';
         }
+
+        $db = Typecho_Db::get();
+        $prefix = $db->getPrefix();
+        self::ensureSchema($db, $prefix);
 
         $location = self::getIpLocation($ip);
+        $visitorId = isset($data['visitor_id']) ? substr(trim((string)$data['visitor_id']), 0, 64) : '';
+        $sessionId = isset($data['session_id']) ? substr(trim((string)$data['session_id']), 0, 64) : '';
+        $referrer = isset($data['referrer']) ? substr((string)$data['referrer'], 0, 512) : '';
+        $userAgent = isset($data['user_agent']) ? (string)$data['user_agent'] : ($_SERVER['HTTP_USER_AGENT'] ?? '');
 
-        $db->query($db->insert('table.visitor_log')->rows(array(
+        // hybrid / server：若请求已带 Cookie，优先写入 Cookie 标识
+        if ($visitorId === '' && !empty($_COOKIE['_vlp_uid'])) {
+            $visitorId = substr(trim((string)$_COOKIE['_vlp_uid']), 0, 64);
+        }
+        if ($sessionId === '' && !empty($_COOKIE['_vlp_sid'])) {
+            $sessionId = substr(trim((string)$_COOKIE['_vlp_sid']), 0, 64);
+        }
+
+        $rows = array(
             'ip' => $ip,
-            'route' => $route,
+            'route' => substr($route, 0, 255),
             'country' => $location['country'] ?? 'Unknown',
             'region' => $location['region'] ?? 'Unknown',
             'city' => $location['city'] ?? 'Unknown',
-            'user_agent' => $_SERVER['HTTP_USER_AGENT'] ?? '',
+            'user_agent' => $userAgent,
             'time' => date('Y-m-d H:i:s')
-        )));
+        );
+
+        // 字段可能尚未迁移成功时降级写入
+        try {
+            $rows['visitor_id'] = $visitorId !== '' ? $visitorId : null;
+            $rows['session_id'] = $sessionId !== '' ? $sessionId : null;
+            $rows['referrer'] = $referrer !== '' ? $referrer : null;
+            $db->query($db->insert('table.visitor_log')->rows($rows));
+        } catch (Exception $e) {
+            unset($rows['visitor_id'], $rows['session_id'], $rows['referrer']);
+            $db->query($db->insert('table.visitor_log')->rows($rows));
+        }
+
+        return 'recorded';
+    }
+
+    public static function logVisitorInfo($header = null, $archive = null)
+    {
+        $mode = self::getTrackingMode();
+        // 纯前端模式：不在服务端重复记 PV，避免与 beacon 双计
+        if ($mode === 'client') {
+            return;
+        }
+
+        self::recordVisit(array(
+            'route' => explode('?', $_SERVER['REQUEST_URI'] ?? '/')[0],
+            'user_agent' => $_SERVER['HTTP_USER_AGENT'] ?? '',
+            'referrer' => $_SERVER['HTTP_REFERER'] ?? '',
+            'source' => 'server'
+        ));
+    }
+
+    /**
+     * 注入前端埋点脚本（client / hybrid）
+     */
+    public static function injectTracker($footer = null, $archive = null)
+    {
+        try {
+            $opts = Helper::options()->plugin('VisitorLoggerPro');
+            if (isset($opts->enableStats) && (string)$opts->enableStats === '0') {
+                return;
+            }
+        } catch (Exception $e) {
+            return;
+        }
+
+        $mode = self::getTrackingMode();
+        if ($mode !== 'client' && $mode !== 'hybrid') {
+            return;
+        }
+
+        $options = Helper::options();
+        $pluginUrl = rtrim($options->pluginUrl, '/') . '/VisitorLoggerPro';
+        $endpoint = $pluginUrl . '/collect.php';
+        $scriptSrc = $pluginUrl . '/js/tracker.js?v=2.3.0';
+
+        echo "\n<script>window.__VLP_TRACKER__=" . json_encode(array(
+            'endpoint' => $endpoint,
+            'mode' => $mode
+        ), JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) . ";</script>\n";
+        echo '<script src="' . htmlspecialchars($scriptSrc, ENT_QUOTES, 'UTF-8') . '" defer></script>' . "\n";
     }
 
     public static function getVisitorLogs($page = 1, $pageSize = 10)
