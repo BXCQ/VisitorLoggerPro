@@ -754,12 +754,19 @@ function initializeApp() {
         padding: 20px;
         background-color: #f5f7fa;
         min-height: 100vh;
+        box-sizing: border-box;
+        width: 100%;
     }
 
+    /* Typecho 1.3 grid.css 将 .container 设为 flex，导致子块宽度随内容收缩 */
     .body.container {
-        max-width: 100%;
+        max-width: 100% !important;
+        width: 100%;
         margin: 0 auto;
         padding: 0 20px;
+        display: block;
+        box-sizing: border-box;
+        flex-wrap: nowrap;
     }
 
     .page-header {

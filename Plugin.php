@@ -9,8 +9,9 @@ if (!defined('__TYPECHO_ROOT_DIR__')) {
  * 
  * @package VisitorLoggerPro
  * @author 璇
- * @version 2.2.8
+ * @version 2.2.9
  * @link https://blog.ybyq.wang
+ * @since 1.2.0
  */
 
 // 加载兼容适配器
@@ -116,7 +117,8 @@ class VisitorLoggerPro_Plugin implements Typecho_Plugin_Interface
         // 注册访客统计API
         Helper::addAction('visitor-stats-api', 'VisitorLogger_Action');
 
-        // 注册统计模板和钩子
+        // 注册统计模板和钩子（兼容 Typecho 1.2 / 1.3）
+        // Plugin::factory 内部会将 Widget\Archive 归一为 Widget_Archive
         Typecho_Plugin::factory('Widget_Archive')->handle = array('VisitorLoggerPro_Plugin', 'handleTemplate');
         Typecho_Plugin::factory('Widget_Archive')->header = array('VisitorLoggerPro_Plugin', 'logVisitorInfo');
 
@@ -366,12 +368,12 @@ class VisitorLoggerPro_Plugin implements Typecho_Plugin_Interface
         return (($ip_long & $mask_long) == ($subnet_long & $mask_long));
     }
 
-    public static function logVisitorInfo()
+    public static function logVisitorInfo($header = null, $archive = null)
     {
         if (self::isBot()) {
             return;
         }
-        $route = explode('?', $_SERVER['REQUEST_URI'])[0];
+        $route = explode('?', $_SERVER['REQUEST_URI'] ?? '/')[0];
         if (strpos($route, "admin") !== false) {
             return;
         }
@@ -605,13 +607,28 @@ class VisitorLoggerPro_Plugin implements Typecho_Plugin_Interface
 
     /**
      * 处理自定义模板
-     * 
+     *
+     * Typecho 1.2 / 1.3 的 handle 钩子签名均为：
+     *   handle(string $type, Widget_Archive $archive, $select)
+     * 此处做参数兼容，避免把 $type 误当成 $archive。
+     *
      * @access public
-     * @param Widget_Archive $archive
+     * @param mixed $typeOrArchive
+     * @param mixed $archive
+     * @param mixed $select
      * @return void
      */
-    public static function handleTemplate($archive)
+    public static function handleTemplate($typeOrArchive, $archive = null, $select = null)
     {
+        if (!is_object($archive) || !method_exists($archive, 'is')) {
+            // 兼容异常调用：仅传入 archive 对象
+            if (is_object($typeOrArchive) && method_exists($typeOrArchive, 'is')) {
+                $archive = $typeOrArchive;
+            } else {
+                return;
+            }
+        }
+
         if ($archive->is('page')) {
             $template = $archive->template;
             if ($template == 'visitor-stats.php' || $template == 'page-visitor-stats.php') {

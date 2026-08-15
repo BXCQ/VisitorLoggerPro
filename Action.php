@@ -5,7 +5,7 @@
  *
  * @package custom
  * @xuan
- * @version 2.0.3
+ * @version 2.0.4
  */
 
 if (!defined('__TYPECHO_ROOT_DIR__')) exit;
@@ -29,6 +29,33 @@ class VisitorLogger_Action extends Typecho_Widget implements Widget_Interface_Do
     }
 
     /**
+     * 获取当前用户组件（兼容 Typecho 1.2 / 1.3）
+     */
+    private function currentUser()
+    {
+        if (class_exists('\\Widget\\User')) {
+            return \Widget\User::alloc();
+        }
+
+        if (method_exists('Typecho_Widget', 'widget')) {
+            return Typecho_Widget::widget('Widget_User');
+        }
+
+        // 极旧写法兜底
+        return $this->widget('Widget_User');
+    }
+
+    /**
+     * 校验管理员权限
+     */
+    private function requireAdministrator()
+    {
+        if (!$this->currentUser()->pass('administrator', true)) {
+            throw new Typecho_Widget_Exception(_t('禁止访问'), 403);
+        }
+    }
+
+    /**
      * 渲染访客统计页面
      */
     public function render()
@@ -38,10 +65,7 @@ class VisitorLogger_Action extends Typecho_Widget implements Widget_Interface_Do
             throw new Typecho_Widget_Exception(_t('访客统计功能未启用'));
         }
 
-        // 检查用户权限
-        if (!$this->user->pass('administrator', true)) {
-            throw new Typecho_Widget_Exception(_t('禁止访问'), 403);
-        }
+        $this->requireAdministrator();
 
         // 渲染模板
         require_once dirname(__FILE__) . '/visitor-stats.php';
@@ -52,13 +76,9 @@ class VisitorLogger_Action extends Typecho_Widget implements Widget_Interface_Do
      */
     public function stats()
     {
-        // 检查用户权限
-        if (!$this->user->pass('administrator', true)) {
-            throw new Typecho_Widget_Exception(_t('禁止访问'), 403);
-        }
+        $this->requireAdministrator();
 
         $db = Typecho_Db::get();
-        $options = Helper::options();
 
         // 获取访客统计数据
         $stats = array(
@@ -96,7 +116,7 @@ class VisitorLogger_Action extends Typecho_Widget implements Widget_Interface_Do
     public function execute()
     {
         // 验证权限
-        if (!$this->widget('Widget_User')->pass('administrator')) {
+        if (!$this->currentUser()->pass('administrator', true)) {
             $this->response->setStatus(403);
             $this->response->throwJson(array('code' => 0, 'message' => '无权限操作'));
         }

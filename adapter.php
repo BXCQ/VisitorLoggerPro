@@ -2,7 +2,7 @@
 
 /**
  * Typecho兼容适配器
- * 用于支持新版Typecho (带命名空间版本) 运行旧版插件
+ * 用于支持新版Typecho（1.2+/1.3 命名空间版本）运行旧版插件写法
  */
 
 // 确保这个文件只在 Typecho 环境中被执行
@@ -26,75 +26,83 @@ if (class_exists('ip2region\\XdbSearcher')) {
     class_alias('ip2region\\XdbSearcher', 'vlp\\ip2region\\XdbSearcher');
 }
 
-// 只有在没有定义这些类的情况下才创建别名
-if (!class_exists('Typecho_Plugin_Interface') && class_exists('\\Typecho\\Plugin\\Interface')) {
-    class_alias('\\Typecho\\Plugin\\Interface', 'Typecho_Plugin_Interface');
+/**
+ * 安全创建类/接口别名（目标不存在或源已存在时跳过）
+ *
+ * @param string $from 真实类名
+ * @param string $to   旧式别名
+ */
+function vlp_safe_class_alias($from, $to)
+{
+    if (class_exists($to, false) || interface_exists($to, false) || trait_exists($to, false)) {
+        return;
+    }
+    if (class_exists($from, false) || interface_exists($from, false) || trait_exists($from, false)
+        || class_exists($from) || interface_exists($from)) {
+        class_alias($from, $to);
+    }
 }
 
-if (!class_exists('Typecho_Db') && class_exists('\\Typecho\\Db')) {
-    class_alias('\\Typecho\\Db', 'Typecho_Db');
+// Typecho 1.3: PluginInterface；部分中间版本曾用 Interface
+if (!interface_exists('Typecho_Plugin_Interface', false)) {
+    if (interface_exists('\\Typecho\\Plugin\\PluginInterface', false) || interface_exists('\\Typecho\\Plugin\\PluginInterface')) {
+        vlp_safe_class_alias('\\Typecho\\Plugin\\PluginInterface', 'Typecho_Plugin_Interface');
+    } elseif (interface_exists('\\Typecho\\Plugin\\Interface', false) || interface_exists('\\Typecho\\Plugin\\Interface')) {
+        vlp_safe_class_alias('\\Typecho\\Plugin\\Interface', 'Typecho_Plugin_Interface');
+    }
 }
 
-if (!class_exists('Typecho_Plugin_Exception') && class_exists('\\Typecho\\Plugin\\Exception')) {
-    class_alias('\\Typecho\\Plugin\\Exception', 'Typecho_Plugin_Exception');
-}
+vlp_safe_class_alias('\\Typecho\\Db', 'Typecho_Db');
+vlp_safe_class_alias('\\Typecho\\Plugin\\Exception', 'Typecho_Plugin_Exception');
+vlp_safe_class_alias('\\Typecho\\Plugin', 'Typecho_Plugin');
+vlp_safe_class_alias('\\Typecho\\Widget\\Helper\\Form', 'Typecho_Widget_Helper_Form');
+vlp_safe_class_alias('\\Typecho\\Widget\\Helper\\Form\\Element\\Textarea', 'Typecho_Widget_Helper_Form_Element_Textarea');
+vlp_safe_class_alias('\\Typecho\\Widget\\Helper\\Form\\Element\\Radio', 'Typecho_Widget_Helper_Form_Element_Radio');
+vlp_safe_class_alias('\\Typecho\\Request', 'Typecho_Request');
+vlp_safe_class_alias('\\Typecho\\Common', 'Typecho_Common');
+vlp_safe_class_alias('\\Typecho\\Widget', 'Typecho_Widget');
+vlp_safe_class_alias('\\Typecho\\Widget\\Exception', 'Typecho_Widget_Exception');
+vlp_safe_class_alias('\\Widget\\Archive', 'Widget_Archive');
+vlp_safe_class_alias('\\Widget\\ActionInterface', 'Widget_Interface_Do');
+vlp_safe_class_alias('\\Widget\\Options', 'Widget_Options');
+vlp_safe_class_alias('\\Widget\\User', 'Widget_User');
 
-if (!class_exists('Typecho_Plugin') && class_exists('\\Typecho\\Plugin')) {
-    class_alias('\\Typecho\\Plugin', 'Typecho_Plugin');
-}
-
-if (!class_exists('Typecho_Widget_Helper_Form') && class_exists('\\Typecho\\Widget\\Helper\\Form')) {
-    class_alias('\\Typecho\\Widget\\Helper\\Form', 'Typecho_Widget_Helper_Form');
-}
-
-if (!class_exists('Typecho_Widget_Helper_Form_Element_Textarea') && class_exists('\\Typecho\\Widget\\Helper\\Form\\Element\\Textarea')) {
-    class_alias('\\Typecho\\Widget\\Helper\\Form\\Element\\Textarea', 'Typecho_Widget_Helper_Form_Element_Textarea');
-}
-
-if (!class_exists('Typecho_Widget_Helper_Form_Element_Radio') && class_exists('\\Typecho\\Widget\\Helper\\Form\\Element\\Radio')) {
-    class_alias('\\Typecho\\Widget\\Helper\\Form\\Element\\Radio', 'Typecho_Widget_Helper_Form_Element_Radio');
-}
-
-if (!class_exists('Typecho_Request') && class_exists('\\Typecho\\Request')) {
-    class_alias('\\Typecho\\Request', 'Typecho_Request');
-}
-
-if (!class_exists('Widget_Archive') && class_exists('\\Typecho\\Widget\\Archive')) {
-    class_alias('\\Typecho\\Widget\\Archive', 'Widget_Archive');
-}
-
-// 处理Helper类
-if (!class_exists('Helper') && class_exists('\\Typecho\\Helper')) {
-    class Helper
-    {
-        public static function options()
+// 处理Helper类（1.3 为 Utils\Helper，Init 中会建别名；独立脚本场景需兜底）
+if (!class_exists('Helper', false)) {
+    if (class_exists('\\Utils\\Helper')) {
+        class_alias('\\Utils\\Helper', 'Helper');
+    } elseif (class_exists('\\Typecho\\Helper')) {
+        class Helper
         {
-            $class = '\\Typecho\\Helper';
-            return $class::options();
-        }
+            public static function options()
+            {
+                $class = '\\Typecho\\Helper';
+                return $class::options();
+            }
 
-        public static function addAction($action, $className)
-        {
-            $class = '\\Typecho\\Helper';
-            return $class::addAction($action, $className);
-        }
+            public static function addAction($action, $className)
+            {
+                $class = '\\Typecho\\Helper';
+                return $class::addAction($action, $className);
+            }
 
-        public static function removeAction($action)
-        {
-            $class = '\\Typecho\\Helper';
-            return $class::removeAction($action);
-        }
+            public static function removeAction($action)
+            {
+                $class = '\\Typecho\\Helper';
+                return $class::removeAction($action);
+            }
 
-        public static function addPanel($group, $fileName, $title, $description, $permission = null)
-        {
-            $class = '\\Typecho\\Helper';
-            return $class::addPanel($group, $fileName, $title, $description, $permission);
-        }
+            public static function addPanel($group, $fileName, $title, $description, $permission = null)
+            {
+                $class = '\\Typecho\\Helper';
+                return $class::addPanel($group, $fileName, $title, $description, $permission);
+            }
 
-        public static function removePanel($group, $fileName)
-        {
-            $class = '\\Typecho\\Helper';
-            return $class::removePanel($group, $fileName);
+            public static function removePanel($group, $fileName)
+            {
+                $class = '\\Typecho\\Helper';
+                return $class::removePanel($group, $fileName);
+            }
         }
     }
 }
