@@ -754,15 +754,24 @@ function initializeApp() {
         padding: 20px;
         background-color: #f5f7fa;
         min-height: 100vh;
+        box-sizing: border-box;
+        width: 100%;
     }
 
+    /* Typecho 1.3 grid.css 将 .container 设为 flex，导致子块宽度随内容收缩 */
     .body.container {
-        max-width: 100%;
+        max-width: 100% !important;
+        width: 100%;
         margin: 0 auto;
         padding: 0 20px;
+        display: block;
+        box-sizing: border-box;
+        flex-wrap: nowrap;
     }
 
     .page-header {
+        width: 100%;
+        box-sizing: border-box;
         background: #fff;
         border-radius: 12px;
         padding: 20px;
@@ -810,6 +819,8 @@ function initializeApp() {
     }
 
     .trend-section {
+        width: 100%;
+        box-sizing: border-box;
         background: #fff;
         border-radius: 12px;
         padding: 24px;
@@ -818,6 +829,8 @@ function initializeApp() {
     }
 
     .controls-section {
+        width: 100%;
+        box-sizing: border-box;
         background: #fff;
         border-radius: 12px;
         padding: 20px;
@@ -925,6 +938,8 @@ function initializeApp() {
 
     /* 指标说明区域样式 */
     .metrics-explanation {
+        width: 100%;
+        box-sizing: border-box;
         background: #fff;
         border-radius: 12px;
         padding: 24px;

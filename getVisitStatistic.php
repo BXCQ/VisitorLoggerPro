@@ -38,15 +38,21 @@ if (!defined('__TYPECHO_ROOT_DIR__')) {
     define('__TYPECHO_ROOT_DIR__', dirname(__FILE__, 4));
     require_once __TYPECHO_ROOT_DIR__ . '/config.inc.php';
 
-    // 兼容不同版本的Typecho
-    if (file_exists(__TYPECHO_ROOT_DIR__ . '/var/Typecho/Common.php')) {
+    // 兼容 Typecho 1.2 / 1.3 初始化
+    if (class_exists('\\Widget\\Init')) {
+        \Widget\Init::alloc();
+    } elseif (file_exists(__TYPECHO_ROOT_DIR__ . '/var/Typecho/Common.php')) {
         require_once __TYPECHO_ROOT_DIR__ . '/var/Typecho/Common.php';
-        \Typecho\Common::init();
-    } else if (file_exists(__TYPECHO_ROOT_DIR__ . '/var/Common.php')) {
+        if (method_exists('\\Typecho\\Common', 'init')) {
+            \Typecho\Common::init();
+        }
+    } elseif (file_exists(__TYPECHO_ROOT_DIR__ . '/var/Common.php')) {
         require_once __TYPECHO_ROOT_DIR__ . '/var/Common.php';
         Typecho_Common::init();
     }
 }
+
+require_once dirname(__FILE__) . '/adapter.php';
 
 // 检查 Typecho 是否成功加载
 if (!class_exists('\\Typecho\\Db') && !class_exists('Typecho_Db')) {

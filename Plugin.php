@@ -9,8 +9,9 @@ if (!defined('__TYPECHO_ROOT_DIR__')) {
  * 
  * @package VisitorLoggerPro
  * @author 璇
- * @version 2.2.9
+ * @version 2.2.10
  * @link https://blog.ybyq.wang
+ * @since 1.2.0
  */
 
 // 加载兼容适配器
@@ -124,7 +125,8 @@ class VisitorLoggerPro_Plugin implements Typecho_Plugin_Interface
         // 注册访客统计API
         Helper::addAction('visitor-stats-api', 'VisitorLogger_Action');
 
-        // 注册统计模板和钩子
+        // 注册统计模板和钩子（兼容 Typecho 1.2 / 1.3）
+        // Plugin::factory 内部会将 Widget\Archive 归一为 Widget_Archive
         Typecho_Plugin::factory('Widget_Archive')->handle = array('VisitorLoggerPro_Plugin', 'handleTemplate');
         Typecho_Plugin::factory('Widget_Archive')->header = array('VisitorLoggerPro_Plugin', 'logVisitorInfo');
 
@@ -144,10 +146,33 @@ class VisitorLoggerPro_Plugin implements Typecho_Plugin_Interface
      */
     public static function deactivate()
     {
+        $dropData = false;
+        try {
+            $pluginOpts = Helper::options()->plugin('VisitorLoggerPro');
+            if (isset($pluginOpts->dropDataOnDeactivate) && $pluginOpts->dropDataOnDeactivate == '1') {
+                $dropData = true;
+            }
+        } catch (Exception $e) {
+            // 读取配置失败时默认保留数据
+        }
+
+        if ($dropData) {
+            try {
+                $db = Typecho_Db::get();
+                $prefix = $db->getPrefix();
+                $db->query("DROP TABLE IF EXISTS `{$prefix}visitor_log`");
+            } catch (Exception $e) {
+                // 删表失败不影响面板与 Action 卸载
+            }
+        }
+
         Helper::removePanel(1, 'VisitorLoggerPro/panel.php');
         Helper::removePanel(2, 'VisitorLoggerPro/trend.php');
         Helper::removeAction('visitor-stats-api');
-        return '插件已禁用，访客日志功能已停用。';
+
+        return $dropData
+            ? '插件已禁用，访客日志数据表已删除。'
+            : '插件已禁用，访客日志功能已停用（数据已保留）。';
     }
 
     /**
@@ -211,6 +236,19 @@ class VisitorLoggerPro_Plugin implements Typecho_Plugin_Interface
             _t('是否启用访客统计功能')
         );
         $form->addInput($enableStats);
+
+        /* 禁用插件时删除数据表（开关，默认关闭） */
+        $dropDataOnDeactivate = new Typecho_Widget_Helper_Form_Element_Radio(
+            'dropDataOnDeactivate',
+            array(
+                '0' => _t('关闭'),
+                '1' => _t('开启')
+            ),
+            '0',
+            _t('禁用时删除数据表'),
+            _t('开关默认关闭：禁用插件时保留 visitor_log 及历史记录。开启后，禁用插件时将删除该数据表及全部访问记录，不可恢复。')
+        );
+        $form->addInput($dropDataOnDeactivate);
     }
 
     /**
@@ -338,12 +376,12 @@ class VisitorLoggerPro_Plugin implements Typecho_Plugin_Interface
         return (($ip_long & $mask_long) == ($subnet_long & $mask_long));
     }
 
-    public static function logVisitorInfo()
+    public static function logVisitorInfo($header = null, $archive = null)
     {
         if (self::isBot()) {
             return;
         }
-        $route = explode('?', $_SERVER['REQUEST_URI'])[0];
+        $route = explode('?', $_SERVER['REQUEST_URI'] ?? '/')[0];
         if (strpos($route, "admin") !== false) {
             return;
         }
@@ -580,13 +618,28 @@ class VisitorLoggerPro_Plugin implements Typecho_Plugin_Interface
 
     /**
      * 处理自定义模板
-     * 
+     *
+     * Typecho 1.2 / 1.3 的 handle 钩子签名均为：
+     *   handle(string $type, Widget_Archive $archive, $select)
+     * 此处做参数兼容，避免把 $type 误当成 $archive。
+     *
      * @access public
-     * @param Widget_Archive $archive
+     * @param mixed $typeOrArchive
+     * @param mixed $archive
+     * @param mixed $select
      * @return void
      */
-    public static function handleTemplate($archive)
+    public static function handleTemplate($typeOrArchive, $archive = null, $select = null)
     {
+        if (!is_object($archive) || !method_exists($archive, 'is')) {
+            // 兼容异常调用：仅传入 archive 对象
+            if (is_object($typeOrArchive) && method_exists($typeOrArchive, 'is')) {
+                $archive = $typeOrArchive;
+            } else {
+                return;
+            }
+        }
+
         if ($archive->is('page')) {
             $template = $archive->template;
             if ($template == 'visitor-stats.php' || $template == 'page-visitor-stats.php') {
