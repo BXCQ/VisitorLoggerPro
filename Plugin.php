@@ -240,7 +240,7 @@ class VisitorLoggerPro_Plugin implements Typecho_Plugin_Interface
             _t('前端埋点：通过第一方 Cookie 识别访客与会话，不执行 JS 的爬虫通常不会被计入，口径更接近主流工具。<br>' .
                 '混合：服务端仍记日志，同时写入 Cookie 中的 visitor_id / session_id（由页脚脚本维护 Cookie，不重复上报）。<br>' .
                 '仅服务端：保持旧行为。升级后若未保存过本选项，运行时仍按「仅服务端」以免突然改口径；建议保存一次并选用「前端埋点」。<br>' .
-                '<strong>升级到 2.3.0 后请先禁用再启用本插件一次</strong>，以注册页脚埋点钩子；然后选择「前端埋点」并保存。')
+                '<strong>说明：</strong>脚本由插件自动注入（header 钩子），无需手动改主题。页面源码中搜索 <code>VisitorLoggerPro tracker</code> 或 <code>tracker.js</code> 即可确认。若仍没有，请确认已保存为「前端埋点/混合」，并确认主题调用了 <code>$this->header()</code>。')
         );
         $form->addInput($trackingMode);
 
@@ -547,6 +547,11 @@ class VisitorLoggerPro_Plugin implements Typecho_Plugin_Interface
     public static function logVisitorInfo($header = null, $archive = null)
     {
         $mode = self::getTrackingMode();
+
+        // 升级用户往往只有 header 钩子（footer 需重新启用才注册）。
+        // 在已有 header 钩子里注入脚本，避免「选了前端埋点却看不到 tracker.js」。
+        self::injectTracker();
+
         // 纯前端模式：不在服务端重复记 PV，避免与 beacon 双计
         if ($mode === 'client') {
             return;
@@ -562,9 +567,15 @@ class VisitorLoggerPro_Plugin implements Typecho_Plugin_Interface
 
     /**
      * 注入前端埋点脚本（client / hybrid）
+     * 可从 header / footer 钩子调用；同请求只输出一次。
      */
     public static function injectTracker($footer = null, $archive = null)
     {
+        static $injected = false;
+        if ($injected) {
+            return;
+        }
+
         try {
             $opts = Helper::options()->plugin('VisitorLoggerPro');
             if (isset($opts->enableStats) && (string)$opts->enableStats === '0') {
@@ -579,15 +590,18 @@ class VisitorLoggerPro_Plugin implements Typecho_Plugin_Interface
             return;
         }
 
+        $injected = true;
+
         $options = Helper::options();
         $pluginUrl = rtrim($options->pluginUrl, '/') . '/VisitorLoggerPro';
         $endpoint = $pluginUrl . '/collect.php';
         $scriptSrc = $pluginUrl . '/js/tracker.js?v=2.3.2';
 
-        echo "\n<script>window.__VLP_TRACKER__=" . json_encode(array(
+        echo "\n<!-- VisitorLoggerPro tracker -->\n";
+        echo '<script>window.__VLP_TRACKER__=' . json_encode(array(
             'endpoint' => $endpoint,
             'mode' => $mode
-        ), JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) . ";</script>\n";
+        ), JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) . ';</script>' . "\n";
         echo '<script src="' . htmlspecialchars($scriptSrc, ENT_QUOTES, 'UTF-8') . '" defer></script>' . "\n";
     }
 
