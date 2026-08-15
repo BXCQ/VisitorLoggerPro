@@ -9,13 +9,14 @@ if (!defined('__TYPECHO_ROOT_DIR__')) {
  * 
  * @package VisitorLoggerPro
  * @author 璇
- * @version 2.2.9
+ * @version 2.2.10
  * @link https://blog.ybyq.wang
  * @since 1.2.0
  */
 
 // 加载兼容适配器
 require_once dirname(__FILE__) . '/adapter.php';
+require_once dirname(__FILE__) . '/DbOptimize.php';
 
 require_once dirname(__FILE__) . '/ipdata/src/IpLocation.php';
 require_once dirname(__FILE__) . '/ipdata/src/ipdbv6.func.php';
@@ -77,7 +78,11 @@ class VisitorLoggerPro_Plugin implements Typecho_Plugin_Interface
             `region` VARCHAR(100),
             `city` VARCHAR(100),
             `user_agent` TEXT,
-            `time` DATETIME DEFAULT NULL
+            `time` DATETIME DEFAULT NULL,
+            KEY `idx_time` (`time`),
+            KEY `idx_time_country` (`time`, `country`),
+            KEY `idx_ip` (`ip`),
+            KEY `idx_time_ip` (`time`, `ip`)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8;";
         // ********如果提示UNSIGNED 或 AUTO_INCREMENT 或 ENGINE的相关错误，将上述代码替换成以下代码********
         //$sql = "CREATE TABLE IF NOT EXISTS `{$prefix}visitor_log` (
@@ -110,6 +115,9 @@ class VisitorLoggerPro_Plugin implements Typecho_Plugin_Interface
             } catch (Exception $e) {
                 // 如果添加字段失败，继续运行（可能是权限问题或数据库不支持）
             }
+
+            // 为已有安装补齐索引（新安装建表时已带索引，此处幂等）
+            VisitorLoggerPro_DbOptimize::ensureIndexes($db, $prefix);
         } catch (Exception $e) {
             throw new Typecho_Plugin_Exception('创建访客日志表或IP地址记录表失败: ' . $e->getMessage());
         }
@@ -432,9 +440,12 @@ class VisitorLoggerPro_Plugin implements Typecho_Plugin_Interface
             ->limit($pageSize);
 
         if (!empty($ip)) {
-            $select->where('ip LIKE ?', '%' . $ip . '%');
+            if (filter_var($ip, FILTER_VALIDATE_IP)) {
+                $select->where('ip = ?', $ip);
+            } else {
+                $select->where('ip LIKE ?', '%' . $ip . '%');
+            }
         }
-
 
         return $db->fetchAll($select);
     }

@@ -49,6 +49,10 @@ try {
     }
     $prefix = $db->getPrefix();
 
+    // 补齐查询索引（幂等）
+    require_once dirname(__FILE__) . '/DbOptimize.php';
+    VisitorLoggerPro_DbOptimize::ensureIndexes($db, $prefix);
+
     // 读取POST数据
     $input = file_get_contents('php://input');
     if (empty($input)) {
@@ -118,20 +122,16 @@ try {
 /**
  * 计算会话数（基于IP和时间间隔）
  * 同一IP在30分钟内的访问视为同一会话
- * 优化版：使用SQL窗口函数来提高性能
  */
 function calculateSessions($db, $prefix, $whereClause)
 {
     try {
-        // 使用SQL计算会话数，性能更好
-        // 如果两次访问间隔超过30分钟，则认为是新会话
         $sql = "SELECT 
                     COUNT(*) as session_count
                 FROM (
                     SELECT 
                         ip,
                         time,
-                        LAG(time) OVER (PARTITION BY ip ORDER BY time) as prev_time,
                         CASE 
                             WHEN LAG(time) OVER (PARTITION BY ip ORDER BY time) IS NULL 
                                 OR TIMESTAMPDIFF(MINUTE, LAG(time) OVER (PARTITION BY ip ORDER BY time), time) > 30 
@@ -140,18 +140,63 @@ function calculateSessions($db, $prefix, $whereClause)
                         END as is_new_session
                     FROM {$prefix}visitor_log 
                     WHERE {$whereClause}
-                    ORDER BY ip, time
                 ) as session_data
                 WHERE is_new_session = 1";
 
         $result = $db->fetchRow($sql);
         return (int)($result['session_count'] ?? 0);
     } catch (Exception $e) {
-        // 如果数据库不支持窗口函数，回退到简单计算
-        // 对于较老的MySQL版本，简单地用独立IP数代替会话数
         $sql = "SELECT COUNT(DISTINCT ip) as session_count FROM {$prefix}visitor_log WHERE {$whereClause}";
         $result = $db->fetchRow($sql);
         return (int)($result['session_count'] ?? 0);
+    }
+}
+
+/**
+ * 按天或按小时批量计算会话数（一次扫描，避免 N 次窗口函数查询）
+ *
+ * @param string $groupExpr SQL 分组表达式，如 DATE(time) 或 HOUR(time)
+ * @return array key => session_count
+ */
+function calculateSessionsGrouped($db, $prefix, $whereClause, $groupExpr)
+{
+    try {
+        $sql = "SELECT 
+                    bucket,
+                    COUNT(*) as session_count
+                FROM (
+                    SELECT 
+                        {$groupExpr} as bucket,
+                        CASE 
+                            WHEN LAG(time) OVER (PARTITION BY ip ORDER BY time) IS NULL 
+                                OR TIMESTAMPDIFF(MINUTE, LAG(time) OVER (PARTITION BY ip ORDER BY time), time) > 30 
+                            THEN 1 
+                            ELSE 0 
+                        END as is_new_session
+                    FROM {$prefix}visitor_log 
+                    WHERE {$whereClause}
+                ) as session_data
+                WHERE is_new_session = 1
+                GROUP BY bucket";
+
+        $rows = $db->fetchAll($sql);
+        $map = [];
+        foreach ($rows as $row) {
+            $map[(string)$row['bucket']] = (int)$row['session_count'];
+        }
+        return $map;
+    } catch (Exception $e) {
+        // 旧版 MySQL：用独立 IP 数近似会话数
+        $sql = "SELECT {$groupExpr} as bucket, COUNT(DISTINCT ip) as session_count
+                FROM {$prefix}visitor_log
+                WHERE {$whereClause}
+                GROUP BY bucket";
+        $rows = $db->fetchAll($sql);
+        $map = [];
+        foreach ($rows as $row) {
+            $map[(string)$row['bucket']] = (int)$row['session_count'];
+        }
+        return $map;
     }
 }
 
@@ -169,6 +214,8 @@ function getTrendData($db, $prefix, $startDate, $endDate)
 
         // 判断是否为单日数据（需要按小时显示）
         $isSingleDay = $days === 1;
+        // 使用时间范围条件，避免 DATE(time)= 导致无法走索引
+        $rangeWhere = "time >= '{$startDate}' AND time <= '{$endDate}'";
 
         if ($isSingleDay) {
             // 单日数据：按小时分组
@@ -177,20 +224,18 @@ function getTrendData($db, $prefix, $startDate, $endDate)
                 $hours[] = sprintf('%02d:00', $h);
             }
 
-            // 查询小时数据
             $sql = "SELECT 
                         HOUR(time) as hour,
                         COUNT(*) as pv_count,
                         COUNT(DISTINCT ip) as unique_ip_count,
                         COUNT(DISTINCT CONCAT(ip, IFNULL(user_agent, ''))) as unique_visitor_count
                     FROM {$prefix}visitor_log 
-                    WHERE DATE(time) = '" . date('Y-m-d', strtotime($startDate)) . "'
+                    WHERE {$rangeWhere}
                     GROUP BY HOUR(time)
                     ORDER BY hour ASC";
 
             $results = $db->fetchAll($sql);
 
-            // 创建结果映射
             $dataMap = [];
             foreach ($results as $row) {
                 $hour = sprintf('%02d:00', $row['hour']);
@@ -201,15 +246,11 @@ function getTrendData($db, $prefix, $startDate, $endDate)
                 ];
             }
 
-            // 计算每小时的会话数
-            $targetDate = date('Y-m-d', strtotime($startDate));
+            // 一次查出全天各小时会话数（替代 24 次窗口查询）
+            $sessionByHour = calculateSessionsGrouped($db, $prefix, $rangeWhere, 'HOUR(time)');
             foreach ($hours as $hour) {
-                $hourNum = intval(substr($hour, 0, 2));
-                $hourStart = $targetDate . ' ' . sprintf('%02d:00:00', $hourNum);
-                $hourEnd = $targetDate . ' ' . sprintf('%02d:59:59', $hourNum);
-                $whereClause = "time >= '{$hourStart}' AND time <= '{$hourEnd}'";
-                $sessionCount = calculateSessions($db, $prefix, $whereClause);
-
+                $hourNum = (string)intval(substr($hour, 0, 2));
+                $sessionCount = isset($sessionByHour[$hourNum]) ? $sessionByHour[$hourNum] : 0;
                 if (isset($dataMap[$hour])) {
                     $dataMap[$hour]['session_count'] = $sessionCount;
                 } else {
@@ -222,7 +263,6 @@ function getTrendData($db, $prefix, $startDate, $endDate)
                 }
             }
 
-            // 填充完整小时数据
             $data = [];
             foreach ($hours as $hour) {
                 $data[] = [
@@ -242,20 +282,18 @@ function getTrendData($db, $prefix, $startDate, $endDate)
                 $current->add(new DateInterval('P1D'));
             }
 
-            // 查询数据
             $sql = "SELECT 
                         DATE(time) as date,
                         COUNT(*) as pv_count,
                         COUNT(DISTINCT ip) as unique_ip_count,
                         COUNT(DISTINCT CONCAT(ip, IFNULL(user_agent, ''))) as unique_visitor_count
                     FROM {$prefix}visitor_log 
-                    WHERE time >= '{$startDate}' AND time <= '{$endDate}'
+                    WHERE {$rangeWhere}
                     GROUP BY DATE(time)
                     ORDER BY date ASC";
 
             $results = $db->fetchAll($sql);
 
-            // 创建结果映射
             $dataMap = [];
             foreach ($results as $row) {
                 $dataMap[$row['date']] = [
@@ -265,11 +303,10 @@ function getTrendData($db, $prefix, $startDate, $endDate)
                 ];
             }
 
-            // 计算每天的会话数
+            // 一次查出各天会话数（替代按天 N 次窗口查询）
+            $sessionByDate = calculateSessionsGrouped($db, $prefix, $rangeWhere, 'DATE(time)');
             foreach ($dates as $date) {
-                $whereClause = "DATE(time) = '{$date}'";
-                $sessionCount = calculateSessions($db, $prefix, $whereClause);
-
+                $sessionCount = isset($sessionByDate[$date]) ? $sessionByDate[$date] : 0;
                 if (isset($dataMap[$date])) {
                     $dataMap[$date]['session_count'] = $sessionCount;
                 } else {
@@ -282,7 +319,6 @@ function getTrendData($db, $prefix, $startDate, $endDate)
                 }
             }
 
-            // 填充完整日期数据
             $data = [];
             foreach ($dates as $date) {
                 $data[] = [
@@ -295,40 +331,23 @@ function getTrendData($db, $prefix, $startDate, $endDate)
             }
         }
 
-        // 计算总数（对于单日数据需要特别处理）
-        if ($isSingleDay) {
-            // 单日数据：统计整天的各项指标
-            $totalSql = "SELECT 
-                            COUNT(*) as total_pv,
-                            COUNT(DISTINCT ip) as total_unique_ip,
-                            COUNT(DISTINCT CONCAT(ip, IFNULL(user_agent, ''))) as total_unique_visitor
-                        FROM {$prefix}visitor_log 
-                        WHERE DATE(time) = '" . date('Y-m-d', strtotime($startDate)) . "'";
-            $totalResult = $db->fetchRow($totalSql);
-            $totalPv = (int)($totalResult['total_pv'] ?? 0);
-            $totalUniqueIp = (int)($totalResult['total_unique_ip'] ?? 0);
-            $totalUniqueVisitor = (int)($totalResult['total_unique_visitor'] ?? 0);
-
-            // 计算总会话数
-            $whereClause = "DATE(time) = '" . date('Y-m-d', strtotime($startDate)) . "'";
-            $totalSession = calculateSessions($db, $prefix, $whereClause);
-        } else {
-            // 多日数据：统计时间范围内的各项指标
-            $totalSql = "SELECT 
-                            COUNT(*) as total_pv,
-                            COUNT(DISTINCT ip) as total_unique_ip,
-                            COUNT(DISTINCT CONCAT(ip, IFNULL(user_agent, ''))) as total_unique_visitor
-                        FROM {$prefix}visitor_log 
-                        WHERE time >= '{$startDate}' AND time <= '{$endDate}'";
-            $totalResult = $db->fetchRow($totalSql);
-            $totalPv = (int)($totalResult['total_pv'] ?? 0);
-            $totalUniqueIp = (int)($totalResult['total_unique_ip'] ?? 0);
-            $totalUniqueVisitor = (int)($totalResult['total_unique_visitor'] ?? 0);
-
-            // 计算总会话数
-            $whereClause = "time >= '{$startDate}' AND time <= '{$endDate}'";
-            $totalSession = calculateSessions($db, $prefix, $whereClause);
+        // 总数：从已聚合数据求和（PV），其余一次范围查询；会话一次计算
+        $totalPv = 0;
+        $totalUniqueIp = 0;
+        $totalUniqueVisitor = 0;
+        foreach ($data as $row) {
+            $totalPv += (int)$row['pv_count'];
         }
+
+        $totalSql = "SELECT 
+                        COUNT(DISTINCT ip) as total_unique_ip,
+                        COUNT(DISTINCT CONCAT(ip, IFNULL(user_agent, ''))) as total_unique_visitor
+                    FROM {$prefix}visitor_log 
+                    WHERE {$rangeWhere}";
+        $totalResult = $db->fetchRow($totalSql);
+        $totalUniqueIp = (int)($totalResult['total_unique_ip'] ?? 0);
+        $totalUniqueVisitor = (int)($totalResult['total_unique_visitor'] ?? 0);
+        $totalSession = calculateSessions($db, $prefix, $rangeWhere);
 
         return [
             'success' => true,

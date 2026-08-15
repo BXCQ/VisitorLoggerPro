@@ -137,6 +137,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' || $_SERVER['REQUEST_METHOD'] === 'GET
         }
         $prefix = $db->getPrefix();
 
+        // 补齐查询索引（幂等；已有安装无需重新启用插件）
+        require_once dirname(__FILE__) . '/DbOptimize.php';
+        VisitorLoggerPro_DbOptimize::ensureIndexes($db, $prefix);
+
         // 确保表存在
         try {
             // 测试表是否存在
@@ -160,7 +164,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' || $_SERVER['REQUEST_METHOD'] === 'GET
         // 使用缓存机制提高性能
         $cacheKey = md5($startDate . $endDate);
         $cacheFile = sys_get_temp_dir() . '/visitor_stats_' . $cacheKey . '.json';
-        $cacheExpire = 300; // 5分钟缓存
+        // 短区间缓存短一些，全量/长区间缓存更久，减轻大表压力
+        $rangeDays = max(1, (int)((strtotime($endDate) - strtotime($startDate)) / 86400) + 1);
+        $cacheExpire = $rangeDays > 30 ? 900 : 300; // 30天以上 15 分钟，否则 5 分钟
 
         // 检查是否有可用缓存
         if (file_exists($cacheFile) && (time() - filemtime($cacheFile) < $cacheExpire)) {
@@ -172,32 +178,29 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' || $_SERVER['REQUEST_METHOD'] === 'GET
             }
         }
 
-        // 获取总访问量
-        $totalVisitsResult = $db->fetchObject(
-            $db->select('COUNT(id) as total')
-                ->from($prefix . 'visitor_log')
-                ->where('time >= ?', $startDate)
-                ->where('time <= ?', $endDate)
-        );
-        $totalVisits = $totalVisitsResult->total;
+        $table = $prefix . 'visitor_log';
 
-        // 获取国家和地区访问数据
+        // 一次扫描完成国家聚合；总访问量由聚合结果求和，少一次全表 COUNT
+        $sortDesc = Typecho_Db::SORT_DESC;
+
         $countryCountsResult = $db->fetchAll(
-            $db->select('country', 'COUNT(id) as count')
-                ->from($prefix . 'visitor_log')
+            $db->select('country', 'COUNT(*) AS count')
+                ->from($table)
                 ->where('time >= ?', $startDate)
                 ->where('time <= ?', $endDate)
                 ->group('country')
-                ->order('count', Typecho_Db::SORT_DESC)
+                ->order('count', $sortDesc)
         );
 
         $countryData = [];
         $provinceData = [];
         $totalCountries = 0;
+        $totalVisits = 0;
 
         foreach ($countryCountsResult as $row) {
-            $countryName = $row['country'] ?: '未知';
-            $count = $row['count'];
+            $countryName = !empty($row['country']) ? $row['country'] : '未知';
+            $count = (int)$row['count'];
+            $totalVisits += $count;
 
             if (!isset($countryData[$countryName])) {
                 $countryData[$countryName] = 0;
@@ -218,33 +221,38 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' || $_SERVER['REQUEST_METHOD'] === 'GET
             }
         }
 
-        // 获取路由访问数据
+        // 路由聚合：按完整 route 分组（避免 SUBSTRING_INDEX 导致无法有效利用索引），PHP 侧去掉 querystring 再合并
         $routeCountsResult = $db->fetchAll(
-            $db->select("SUBSTRING_INDEX(route, '?', 1) as clean_route", 'COUNT(id) as count')
-                ->from($prefix . 'visitor_log')
+            $db->select('route', 'COUNT(*) AS count')
+                ->from($table)
                 ->where('time >= ?', $startDate)
                 ->where('time <= ?', $endDate)
-                ->group('clean_route')
+                ->group('route')
+                ->order('count', $sortDesc)
         );
 
         $routeCounts = [];
         foreach ($routeCountsResult as $row) {
-            $decodedRoute = urldecode($row['clean_route']);
-            $routeCounts[$decodedRoute] = $row['count'];
+            $cleanRoute = isset($row['route']) ? $row['route'] : '';
+            $qPos = strpos($cleanRoute, '?');
+            if ($qPos !== false) {
+                $cleanRoute = substr($cleanRoute, 0, $qPos);
+            }
+            $decodedRoute = urldecode($cleanRoute);
+            if (!isset($routeCounts[$decodedRoute])) {
+                $routeCounts[$decodedRoute] = 0;
+            }
+            $routeCounts[$decodedRoute] += (int)$row['count'];
         }
 
         arsort($countryData);
         arsort($provinceData);
         arsort($routeCounts);
 
-        // 保存完整数据副本
-        $allCountryData = $countryData;
-        $allProvinceData = $provinceData;
-
-        // 只保留前30个国家/地区（确保不过滤掉任何数据）
+        // 只保留前30个国家/地区
         $countryData = array_slice($countryData, 0, 30, true);
 
-        // 只保留前30个省份（确保不过滤掉任何数据）
+        // 只保留前30个省份
         $provinceData = array_slice($provinceData, 0, 30, true);
 
         // 只保留前20个路由

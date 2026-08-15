@@ -15,7 +15,20 @@ $db = Typecho_Db::get();
 $prefix = $db->getPrefix();
 
 $ip = isset($_POST['ipQuery']) ? $_POST['ipQuery'] : (isset($_GET['ipQuery']) ? $_GET['ipQuery'] : '');
-$totalLogs = $db->fetchObject($db->select(array('COUNT(*)' => 'num'))->from($prefix . 'visitor_log')->where('ip LIKE ?', '%' . $ip . '%'))->num;
+
+require_once dirname(__FILE__) . '/DbOptimize.php';
+VisitorLoggerPro_DbOptimize::ensureIndexes($db, $prefix);
+
+$countSelect = $db->select(array('COUNT(*)' => 'num'))->from($prefix . 'visitor_log');
+if ($ip !== '') {
+    // 完整 IP 用等值查询走索引；否则才模糊匹配
+    if (filter_var($ip, FILTER_VALIDATE_IP)) {
+        $countSelect->where('ip = ?', $ip);
+    } else {
+        $countSelect->where('ip LIKE ?', '%' . $ip . '%');
+    }
+}
+$totalLogs = $db->fetchObject($countSelect)->num;
 $totalPages = ceil($totalLogs / $pageSize);
 
 $logs = VisitorLoggerPro_Plugin::getSearchVisitorLogs($page, $pageSize, $ip);
@@ -23,42 +36,46 @@ $logs = VisitorLoggerPro_Plugin::getSearchVisitorLogs($page, $pageSize, $ip);
 $startDate = isset($_POST['startDate']) ? $_POST['startDate'] : date('Y-m-d 00:00:00', strtotime('-6 days'));
 $endDate = isset($_POST['endDate']) ? $_POST['endDate'] : date('Y-m-d 23:59:59');
 
-// 获取所有记录用于统计
-$allLogsForStats = $db->fetchAll($db->select('country, route')
+// 用 SQL 聚合，避免把全部日志拉进 PHP（90万+ 行时会极慢）
+$countrySelect = $db->select('country', 'COUNT(*) AS count')
     ->from($prefix . 'visitor_log')
-    ->where('ip LIKE ?', '%' . $ip . '%'));
+    ->group('country')
+    ->order('count', Typecho_Db::SORT_DESC)
+    ->limit(50);
+$routeSelect = $db->select('route', 'COUNT(*) AS count')
+    ->from($prefix . 'visitor_log')
+    ->group('route')
+    ->order('count', Typecho_Db::SORT_DESC)
+    ->limit(50);
 
-// 在PHP中进行统计
-$countryStats = [];
-$routeStats = [];
-
-foreach ($allLogsForStats as $log) {
-    // 统计国家访问
-    $country = $log['country'];
-    if (!isset($countryStats[$country])) {
-        $countryStats[$country] = ['country' => $country, 'count' => 0];
+if ($ip !== '') {
+    if (filter_var($ip, FILTER_VALIDATE_IP)) {
+        $countrySelect->where('ip = ?', $ip);
+        $routeSelect->where('ip = ?', $ip);
+    } else {
+        $countrySelect->where('ip LIKE ?', '%' . $ip . '%');
+        $routeSelect->where('ip LIKE ?', '%' . $ip . '%');
     }
-    $countryStats[$country]['count']++;
-
-    // 统计路由访问
-    $route = $log['route'];
-    if (!isset($routeStats[$route])) {
-        $routeStats[$route] = ['route' => $route, 'count' => 0];
-    }
-    $routeStats[$route]['count']++;
 }
 
-// 按count降序排序
-uasort($countryStats, function ($a, $b) {
-    return $b['count'] - $a['count'];
-});
+$countryRows = $db->fetchAll($countrySelect);
+$routeRows = $db->fetchAll($routeSelect);
 
-uasort($routeStats, function ($a, $b) {
-    return $b['count'] - $a['count'];
-});
+$countryStats = [];
+foreach ($countryRows as $row) {
+    $countryStats[] = [
+        'country' => $row['country'],
+        'count' => (int)$row['count']
+    ];
+}
 
-$countryStats = array_values($countryStats);
-$routeStats = array_values($routeStats);
+$routeStats = [];
+foreach ($routeRows as $row) {
+    $routeStats[] = [
+        'route' => $row['route'],
+        'count' => (int)$row['count']
+    ];
+}
 ?>
 
 <script>
