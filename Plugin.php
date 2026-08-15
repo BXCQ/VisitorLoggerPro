@@ -136,10 +136,33 @@ class VisitorLoggerPro_Plugin implements Typecho_Plugin_Interface
      */
     public static function deactivate()
     {
+        $dropData = false;
+        try {
+            $pluginOpts = Helper::options()->plugin('VisitorLoggerPro');
+            if (isset($pluginOpts->dropDataOnDeactivate) && $pluginOpts->dropDataOnDeactivate == '1') {
+                $dropData = true;
+            }
+        } catch (Exception $e) {
+            // 读取配置失败时默认保留数据
+        }
+
+        if ($dropData) {
+            try {
+                $db = Typecho_Db::get();
+                $prefix = $db->getPrefix();
+                $db->query("DROP TABLE IF EXISTS `{$prefix}visitor_log`");
+            } catch (Exception $e) {
+                // 删表失败不影响面板与 Action 卸载
+            }
+        }
+
         Helper::removePanel(1, 'VisitorLoggerPro/panel.php');
         Helper::removePanel(2, 'VisitorLoggerPro/trend.php');
         Helper::removeAction('visitor-stats-api');
-        return '插件已禁用，访客日志功能已停用。';
+
+        return $dropData
+            ? '插件已禁用，访客日志数据表已删除。'
+            : '插件已禁用，访客日志功能已停用（数据已保留）。';
     }
 
     /**
@@ -203,6 +226,19 @@ class VisitorLoggerPro_Plugin implements Typecho_Plugin_Interface
             _t('是否启用访客统计功能')
         );
         $form->addInput($enableStats);
+
+        /* 禁用插件时是否删除数据表 */
+        $dropDataOnDeactivate = new Typecho_Widget_Helper_Form_Element_Radio(
+            'dropDataOnDeactivate',
+            array(
+                '0' => _t('否（保留数据）'),
+                '1' => _t('是（删除数据表）')
+            ),
+            '0',
+            _t('禁用插件时删除数据'),
+            _t('选择「是」后，禁用插件时将删除 visitor_log 数据表及其中全部访问记录；选择「否」则保留历史数据，便于再次启用后继续统计。默认保留数据。')
+        );
+        $form->addInput($dropDataOnDeactivate);
     }
 
     /**

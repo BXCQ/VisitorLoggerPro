@@ -763,6 +763,8 @@ function initializeApp() {
     }
 
     .page-header {
+        width: 100%;
+        box-sizing: border-box;
         background: #fff;
         border-radius: 12px;
         padding: 20px;
@@ -810,6 +812,8 @@ function initializeApp() {
     }
 
     .trend-section {
+        width: 100%;
+        box-sizing: border-box;
         background: #fff;
         border-radius: 12px;
         padding: 24px;
@@ -818,6 +822,8 @@ function initializeApp() {
     }
 
     .controls-section {
+        width: 100%;
+        box-sizing: border-box;
         background: #fff;
         border-radius: 12px;
         padding: 20px;
@@ -925,6 +931,8 @@ function initializeApp() {
 
     /* 指标说明区域样式 */
     .metrics-explanation {
+        width: 100%;
+        box-sizing: border-box;
         background: #fff;
         border-radius: 12px;
         padding: 24px;

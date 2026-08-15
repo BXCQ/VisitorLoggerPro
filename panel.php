@@ -753,6 +753,8 @@ function initializeApp() {
     }
 
     .page-header {
+        width: 100%;
+        box-sizing: border-box;
         background: #fff;
         border-radius: 12px;
         padding: 20px;
@@ -800,6 +802,8 @@ function initializeApp() {
     }
 
     .info-panel {
+        width: 100%;
+        box-sizing: border-box;
         background: #fff;
         border-radius: 12px;
         padding: 20px;
@@ -1002,6 +1006,8 @@ function initializeApp() {
     }
 
     .stats-section {
+        width: 100%;
+        box-sizing: border-box;
         background: #fff;
         border-radius: 12px;
         padding: 24px;
