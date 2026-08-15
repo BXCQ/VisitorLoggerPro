@@ -6,11 +6,38 @@
 (function () {
   'use strict';
 
+  var TAG = '[VisitorLoggerPro]';
   var cfg = window.__VLP_TRACKER__ || {};
   var endpoint = cfg.endpoint;
+
+  function log() {
+    if (typeof console === 'undefined' || !console.log) {
+      return;
+    }
+    var args = Array.prototype.slice.call(arguments);
+    args.unshift(TAG);
+    console.log.apply(console, args);
+  }
+
+  function warn() {
+    if (typeof console === 'undefined' || !console.warn) {
+      return;
+    }
+    var args = Array.prototype.slice.call(arguments);
+    args.unshift(TAG);
+    console.warn.apply(console, args);
+  }
+
   if (!endpoint) {
+    warn('未找到 window.__VLP_TRACKER__.endpoint，埋点未启动');
     return;
   }
+
+  log('埋点脚本已加载', {
+    mode: cfg.mode || 'unknown',
+    endpoint: endpoint,
+    page: location.href
+  });
 
   var UID_KEY = '_vlp_uid';
   var SID_KEY = '_vlp_sid';
@@ -84,14 +111,24 @@
 
   function send(data) {
     var body = JSON.stringify(data);
+    log('正在上报 pageview', {
+      route: data.route,
+      visitor_id: data.visitor_id,
+      session_id: data.session_id,
+      referrer: data.referrer || '(空)'
+    });
+
     try {
       if (navigator.sendBeacon) {
         var blob = new Blob([body], { type: 'application/json' });
         if (navigator.sendBeacon(endpoint, blob)) {
+          log('上报已发送（sendBeacon）');
           return;
         }
       }
-    } catch (e) {}
+    } catch (e) {
+      warn('sendBeacon 失败，改用 fetch', e);
+    }
 
     try {
       fetch(endpoint, {
@@ -100,20 +137,42 @@
         body: body,
         keepalive: true,
         credentials: 'same-origin'
-      });
-    } catch (e2) {}
+      })
+        .then(function (res) {
+          return res.json().catch(function () {
+            return {};
+          }).then(function (json) {
+            if (res.ok) {
+              log('上报成功（fetch）', json);
+            } else {
+              warn('上报失败（fetch）', res.status, json);
+            }
+          });
+        })
+        .catch(function (err) {
+          warn('上报请求异常', err);
+        });
+    } catch (e2) {
+      warn('无法发起上报', e2);
+    }
   }
 
   function track() {
     // hybrid：只维护 Cookie，由服务端 header 钩子写入，避免双计
     if (cfg.mode === 'hybrid') {
-      getVisitorId();
-      getSessionId();
+      var vid = getVisitorId();
+      var sid = getSessionId();
+      log('hybrid 模式：仅刷新 Cookie，不上报 beacon', {
+        visitor_id: vid,
+        session_id: sid
+      });
       return;
     }
     var data = payload();
     if (data) {
       send(data);
+    } else {
+      log('当前路径跳过统计', location.pathname);
     }
   }
 

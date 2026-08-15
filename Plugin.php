@@ -9,7 +9,7 @@ if (!defined('__TYPECHO_ROOT_DIR__')) {
  * 
  * @package VisitorLoggerPro
  * @author 璇
- * @version 2.3.1
+ * @version 2.3.2
  * @link https://blog.ybyq.wang
  * @since 1.2.0
  */
@@ -595,7 +595,7 @@ class VisitorLoggerPro_Plugin implements Typecho_Plugin_Interface
         $options = Helper::options();
         $pluginUrl = rtrim($options->pluginUrl, '/') . '/VisitorLoggerPro';
         $endpoint = $pluginUrl . '/collect.php';
-        $scriptSrc = $pluginUrl . '/js/tracker.js?v=2.3.1';
+        $scriptSrc = $pluginUrl . '/js/tracker.js?v=2.3.2';
 
         echo "\n<!-- VisitorLoggerPro tracker -->\n";
         echo '<script>window.__VLP_TRACKER__=' . json_encode(array(
