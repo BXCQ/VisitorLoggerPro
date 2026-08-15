@@ -58,9 +58,39 @@ class VisitorLoggerPro_DbOptimize
             if (empty($existing['idx_time_ip'])) {
                 $db->query("ALTER TABLE `{$table}` ADD INDEX `idx_time_ip` (`time`, `ip`)");
             }
+
+            // Cookie 访客 / 会话（前端埋点口径）
+            if (empty($existing['idx_time_visitor'])) {
+                $db->query("ALTER TABLE `{$table}` ADD INDEX `idx_time_visitor` (`time`, `visitor_id`)");
+            }
+            if (empty($existing['idx_time_session'])) {
+                $db->query("ALTER TABLE `{$table}` ADD INDEX `idx_time_session` (`time`, `session_id`)");
+            }
         } catch (Exception $e) {
             // SQLite 或不支持 ALTER 的环境：忽略，避免影响正常统计
             error_log('VisitorLoggerPro ensureIndexes: ' . $e->getMessage());
         }
+    }
+
+    /**
+     * 检测 visitor_id / session_id 字段是否可用
+     */
+    public static function hasIdentityColumns($db, $prefix)
+    {
+        static $cached = null;
+        if ($cached !== null) {
+            return $cached;
+        }
+        try {
+            $columns = $db->fetchAll("SHOW COLUMNS FROM `{$prefix}visitor_log`");
+            $fields = array();
+            foreach ($columns as $column) {
+                $fields[$column['Field']] = true;
+            }
+            $cached = !empty($fields['visitor_id']) && !empty($fields['session_id']);
+        } catch (Exception $e) {
+            $cached = false;
+        }
+        return $cached;
     }
 }

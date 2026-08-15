@@ -49,8 +49,10 @@ try {
     }
     $prefix = $db->getPrefix();
 
-    // 补齐查询索引（幂等）
+    // 补齐查询索引与身份字段（幂等）
     require_once dirname(__FILE__) . '/DbOptimize.php';
+    require_once dirname(__FILE__) . '/Plugin.php';
+    VisitorLoggerPro_Plugin::ensureSchema($db, $prefix);
     VisitorLoggerPro_DbOptimize::ensureIndexes($db, $prefix);
 
     // 读取POST数据
@@ -120,11 +122,31 @@ try {
 }
 
 /**
- * 计算会话数（基于IP和时间间隔）
- * 同一IP在30分钟内的访问视为同一会话
+ * 计算会话数
+ * - 有 session_id：按 Cookie 会话去重（主流口径）
+ * - 无 session_id 的旧数据：同一 IP 间隔 >30 分钟视为新会话
  */
-function calculateSessions($db, $prefix, $whereClause)
+function calculateSessions($db, $prefix, $whereClause, $hasIdentity = false)
 {
+    $cookieSessions = 0;
+    if ($hasIdentity) {
+        try {
+            $sql = "SELECT COUNT(DISTINCT session_id) as session_count
+                    FROM {$prefix}visitor_log
+                    WHERE {$whereClause}
+                      AND session_id IS NOT NULL AND session_id != ''";
+            $result = $db->fetchRow($sql);
+            $cookieSessions = (int)($result['session_count'] ?? 0);
+        } catch (Exception $e) {
+            $cookieSessions = 0;
+        }
+    }
+
+    $legacyWhere = $whereClause;
+    if ($hasIdentity) {
+        $legacyWhere .= " AND (session_id IS NULL OR session_id = '')";
+    }
+
     try {
         $sql = "SELECT 
                     COUNT(*) as session_count
@@ -139,17 +161,19 @@ function calculateSessions($db, $prefix, $whereClause)
                             ELSE 0 
                         END as is_new_session
                     FROM {$prefix}visitor_log 
-                    WHERE {$whereClause}
+                    WHERE {$legacyWhere}
                 ) as session_data
                 WHERE is_new_session = 1";
 
         $result = $db->fetchRow($sql);
-        return (int)($result['session_count'] ?? 0);
+        $legacySessions = (int)($result['session_count'] ?? 0);
     } catch (Exception $e) {
-        $sql = "SELECT COUNT(DISTINCT ip) as session_count FROM {$prefix}visitor_log WHERE {$whereClause}";
+        $sql = "SELECT COUNT(DISTINCT ip) as session_count FROM {$prefix}visitor_log WHERE {$legacyWhere}";
         $result = $db->fetchRow($sql);
-        return (int)($result['session_count'] ?? 0);
+        $legacySessions = (int)($result['session_count'] ?? 0);
     }
+
+    return $cookieSessions + $legacySessions;
 }
 
 /**
@@ -158,8 +182,31 @@ function calculateSessions($db, $prefix, $whereClause)
  * @param string $groupExpr SQL 分组表达式，如 DATE(time) 或 HOUR(time)
  * @return array key => session_count
  */
-function calculateSessionsGrouped($db, $prefix, $whereClause, $groupExpr)
+function calculateSessionsGrouped($db, $prefix, $whereClause, $groupExpr, $hasIdentity = false)
 {
+    $map = array();
+
+    if ($hasIdentity) {
+        try {
+            $sql = "SELECT {$groupExpr} as bucket, COUNT(DISTINCT session_id) as session_count
+                    FROM {$prefix}visitor_log
+                    WHERE {$whereClause}
+                      AND session_id IS NOT NULL AND session_id != ''
+                    GROUP BY bucket";
+            $rows = $db->fetchAll($sql);
+            foreach ($rows as $row) {
+                $map[(string)$row['bucket']] = (int)$row['session_count'];
+            }
+        } catch (Exception $e) {
+            // ignore
+        }
+    }
+
+    $legacyWhere = $whereClause;
+    if ($hasIdentity) {
+        $legacyWhere .= " AND (session_id IS NULL OR session_id = '')";
+    }
+
     try {
         $sql = "SELECT 
                     bucket,
@@ -174,30 +221,41 @@ function calculateSessionsGrouped($db, $prefix, $whereClause, $groupExpr)
                             ELSE 0 
                         END as is_new_session
                     FROM {$prefix}visitor_log 
-                    WHERE {$whereClause}
+                    WHERE {$legacyWhere}
                 ) as session_data
                 WHERE is_new_session = 1
                 GROUP BY bucket";
 
         $rows = $db->fetchAll($sql);
-        $map = [];
         foreach ($rows as $row) {
-            $map[(string)$row['bucket']] = (int)$row['session_count'];
+            $key = (string)$row['bucket'];
+            $map[$key] = isset($map[$key]) ? $map[$key] + (int)$row['session_count'] : (int)$row['session_count'];
         }
         return $map;
     } catch (Exception $e) {
         // 旧版 MySQL：用独立 IP 数近似会话数
         $sql = "SELECT {$groupExpr} as bucket, COUNT(DISTINCT ip) as session_count
                 FROM {$prefix}visitor_log
-                WHERE {$whereClause}
+                WHERE {$legacyWhere}
                 GROUP BY bucket";
         $rows = $db->fetchAll($sql);
-        $map = [];
         foreach ($rows as $row) {
-            $map[(string)$row['bucket']] = (int)$row['session_count'];
+            $key = (string)$row['bucket'];
+            $map[$key] = isset($map[$key]) ? $map[$key] + (int)$row['session_count'] : (int)$row['session_count'];
         }
         return $map;
     }
+}
+
+/**
+ * UV 表达式：优先 Cookie visitor_id，旧数据回退 IP+UA
+ */
+function uniqueVisitorExpr($hasIdentity)
+{
+    if ($hasIdentity) {
+        return "COUNT(DISTINCT COALESCE(NULLIF(visitor_id, ''), CONCAT('legacy:', ip, IFNULL(user_agent, ''))))";
+    }
+    return "COUNT(DISTINCT CONCAT(ip, IFNULL(user_agent, '')))";
 }
 
 /**
@@ -216,6 +274,8 @@ function getTrendData($db, $prefix, $startDate, $endDate)
         $isSingleDay = $days === 1;
         // 使用时间范围条件，避免 DATE(time)= 导致无法走索引
         $rangeWhere = "time >= '{$startDate}' AND time <= '{$endDate}'";
+        $hasIdentity = VisitorLoggerPro_DbOptimize::hasIdentityColumns($db, $prefix);
+        $uvExpr = uniqueVisitorExpr($hasIdentity);
 
         if ($isSingleDay) {
             // 单日数据：按小时分组
@@ -228,7 +288,7 @@ function getTrendData($db, $prefix, $startDate, $endDate)
                         HOUR(time) as hour,
                         COUNT(*) as pv_count,
                         COUNT(DISTINCT ip) as unique_ip_count,
-                        COUNT(DISTINCT CONCAT(ip, IFNULL(user_agent, ''))) as unique_visitor_count
+                        {$uvExpr} as unique_visitor_count
                     FROM {$prefix}visitor_log 
                     WHERE {$rangeWhere}
                     GROUP BY HOUR(time)
@@ -247,7 +307,7 @@ function getTrendData($db, $prefix, $startDate, $endDate)
             }
 
             // 一次查出全天各小时会话数（替代 24 次窗口查询）
-            $sessionByHour = calculateSessionsGrouped($db, $prefix, $rangeWhere, 'HOUR(time)');
+            $sessionByHour = calculateSessionsGrouped($db, $prefix, $rangeWhere, 'HOUR(time)', $hasIdentity);
             foreach ($hours as $hour) {
                 $hourNum = (string)intval(substr($hour, 0, 2));
                 $sessionCount = isset($sessionByHour[$hourNum]) ? $sessionByHour[$hourNum] : 0;
@@ -286,7 +346,7 @@ function getTrendData($db, $prefix, $startDate, $endDate)
                         DATE(time) as date,
                         COUNT(*) as pv_count,
                         COUNT(DISTINCT ip) as unique_ip_count,
-                        COUNT(DISTINCT CONCAT(ip, IFNULL(user_agent, ''))) as unique_visitor_count
+                        {$uvExpr} as unique_visitor_count
                     FROM {$prefix}visitor_log 
                     WHERE {$rangeWhere}
                     GROUP BY DATE(time)
@@ -304,7 +364,7 @@ function getTrendData($db, $prefix, $startDate, $endDate)
             }
 
             // 一次查出各天会话数（替代按天 N 次窗口查询）
-            $sessionByDate = calculateSessionsGrouped($db, $prefix, $rangeWhere, 'DATE(time)');
+            $sessionByDate = calculateSessionsGrouped($db, $prefix, $rangeWhere, 'DATE(time)', $hasIdentity);
             foreach ($dates as $date) {
                 $sessionCount = isset($sessionByDate[$date]) ? $sessionByDate[$date] : 0;
                 if (isset($dataMap[$date])) {
@@ -333,21 +393,19 @@ function getTrendData($db, $prefix, $startDate, $endDate)
 
         // 总数：从已聚合数据求和（PV），其余一次范围查询；会话一次计算
         $totalPv = 0;
-        $totalUniqueIp = 0;
-        $totalUniqueVisitor = 0;
         foreach ($data as $row) {
             $totalPv += (int)$row['pv_count'];
         }
 
         $totalSql = "SELECT 
                         COUNT(DISTINCT ip) as total_unique_ip,
-                        COUNT(DISTINCT CONCAT(ip, IFNULL(user_agent, ''))) as total_unique_visitor
+                        {$uvExpr} as total_unique_visitor
                     FROM {$prefix}visitor_log 
                     WHERE {$rangeWhere}";
         $totalResult = $db->fetchRow($totalSql);
         $totalUniqueIp = (int)($totalResult['total_unique_ip'] ?? 0);
         $totalUniqueVisitor = (int)($totalResult['total_unique_visitor'] ?? 0);
-        $totalSession = calculateSessions($db, $prefix, $rangeWhere);
+        $totalSession = calculateSessions($db, $prefix, $rangeWhere, $hasIdentity);
 
         return [
             'success' => true,
@@ -363,6 +421,11 @@ function getTrendData($db, $prefix, $startDate, $endDate)
                 'total_unique_ip' => $totalUniqueIp,
                 'total_unique_visitor' => $totalUniqueVisitor,
                 'total_session' => $totalSession
+            ],
+            'method' => [
+                'identity_columns' => $hasIdentity,
+                'uv' => $hasIdentity ? 'cookie_visitor_id_with_legacy_fallback' : 'ip_user_agent',
+                'session' => $hasIdentity ? 'cookie_session_id_with_legacy_fallback' : 'ip_gap_30m'
             ]
         ];
     } catch (Exception $e) {
