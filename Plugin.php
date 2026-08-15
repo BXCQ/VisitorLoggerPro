@@ -227,16 +227,16 @@ class VisitorLoggerPro_Plugin implements Typecho_Plugin_Interface
         );
         $form->addInput($enableStats);
 
-        /* 禁用插件时是否删除数据表 */
+        /* 禁用插件时删除数据表（开关，默认关闭） */
         $dropDataOnDeactivate = new Typecho_Widget_Helper_Form_Element_Radio(
             'dropDataOnDeactivate',
             array(
-                '0' => _t('否（保留数据）'),
-                '1' => _t('是（删除数据表）')
+                '0' => _t('关闭'),
+                '1' => _t('开启')
             ),
             '0',
-            _t('禁用插件时删除数据'),
-            _t('选择「是」后，禁用插件时将删除 visitor_log 数据表及其中全部访问记录；选择「否」则保留历史数据，便于再次启用后继续统计。默认保留数据。')
+            _t('禁用时删除数据表'),
+            _t('开关默认关闭：禁用插件时保留 visitor_log 及历史记录。开启后，禁用插件时将删除该数据表及全部访问记录，不可恢复。')
         );
         $form->addInput($dropDataOnDeactivate);
     }
