@@ -5,77 +5,88 @@ if (!defined('__TYPECHO_ROOT_DIR__')) exit;
 if (!defined('__TYPECHO_ADMIN__')) {
     include 'common.php';
 }
-include 'header.php';
-include 'menu.php';
-
-$page = isset($_GET['page']) ? intval($_GET['page']) : 1;
-$pageSize = 10;
 
 $db = Typecho_Db::get();
 $prefix = $db->getPrefix();
 
+$page = isset($_GET['page']) ? max(1, intval($_GET['page'])) : 1;
+$pageSize = 10;
 $ip = isset($_POST['ipQuery']) ? $_POST['ipQuery'] : (isset($_GET['ipQuery']) ? $_GET['ipQuery'] : '');
 
 require_once dirname(__FILE__) . '/DbOptimize.php';
 VisitorLoggerPro_DbOptimize::ensureIndexes($db, $prefix);
 
-$countSelect = $db->select(array('COUNT(*)' => 'num'))->from($prefix . 'visitor_log');
-if ($ip !== '') {
-    // 完整 IP 用等值查询走索引；否则才模糊匹配
-    if (filter_var($ip, FILTER_VALIDATE_IP)) {
-        $countSelect->where('ip = ?', $ip);
-    } else {
-        $countSelect->where('ip LIKE ?', '%' . $ip . '%');
+/**
+ * 构建访客日志总数查询
+ */
+function visitorLoggerPro_buildCountSelect($db, $prefix, $ip)
+{
+    $countSelect = $db->select(array('COUNT(*)' => 'num'))->from($prefix . 'visitor_log');
+    if ($ip !== '') {
+        if (filter_var($ip, FILTER_VALIDATE_IP)) {
+            $countSelect->where('ip = ?', $ip);
+        } else {
+            $countSelect->where('ip LIKE ?', '%' . $ip . '%');
+        }
     }
+    return $countSelect;
 }
-$totalLogs = $db->fetchObject($countSelect)->num;
-$totalPages = ceil($totalLogs / $pageSize);
+
+/**
+ * 渲染日志表格行 HTML
+ */
+function visitorLoggerPro_renderLogRows($logs)
+{
+    if (empty($logs)) {
+        return '<tr><td colspan="5">暂无记录</td></tr>';
+    }
+
+    $html = '';
+    foreach ($logs as $log) {
+        $userAgent = isset($log['user_agent']) ? $log['user_agent'] : '';
+        $uaDisplay = strlen($userAgent) > 50
+            ? htmlspecialchars(substr($userAgent, 0, 50) . '...')
+            : htmlspecialchars($userAgent);
+
+        $html .= '<tr>'
+            . '<td>' . htmlspecialchars($log['ip']) . '</td>'
+            . '<td>' . htmlspecialchars(urldecode($log['route'])) . '</td>'
+            . '<td>' . htmlspecialchars($log['country']) . '</td>'
+            . '<td title="' . htmlspecialchars($userAgent) . '">' . $uaDisplay . '</td>'
+            . '<td>' . htmlspecialchars($log['time']) . '</td>'
+            . '</tr>';
+    }
+    return $html;
+}
+
+$totalLogs = $db->fetchObject(visitorLoggerPro_buildCountSelect($db, $prefix, $ip))->num;
+$totalPages = max(1, (int)ceil($totalLogs / $pageSize));
+if ($page > $totalPages) {
+    $page = $totalPages;
+}
 
 $logs = VisitorLoggerPro_Plugin::getSearchVisitorLogs($page, $pageSize, $ip);
 
+// AJAX 翻页：只返回日志表格，不刷新右侧图表
+if (isset($_GET['ajax']) && $_GET['ajax'] === 'logs') {
+    header('Content-Type: application/json; charset=utf-8');
+    header('Cache-Control: no-store, no-cache, must-revalidate');
+    echo json_encode(array(
+        'success' => true,
+        'page' => $page,
+        'totalPages' => $totalPages,
+        'totalLogs' => (int)$totalLogs,
+        'ipQuery' => $ip,
+        'html' => visitorLoggerPro_renderLogRows($logs)
+    ), JSON_UNESCAPED_UNICODE);
+    exit;
+}
+
+include 'header.php';
+include 'menu.php';
+
 $startDate = isset($_POST['startDate']) ? $_POST['startDate'] : date('Y-m-d 00:00:00', strtotime('-6 days'));
 $endDate = isset($_POST['endDate']) ? $_POST['endDate'] : date('Y-m-d 23:59:59');
-
-// 用 SQL 聚合，避免把全部日志拉进 PHP（90万+ 行时会极慢）
-$countrySelect = $db->select('country', 'COUNT(*) AS count')
-    ->from($prefix . 'visitor_log')
-    ->group('country')
-    ->order('count', Typecho_Db::SORT_DESC)
-    ->limit(50);
-$routeSelect = $db->select('route', 'COUNT(*) AS count')
-    ->from($prefix . 'visitor_log')
-    ->group('route')
-    ->order('count', Typecho_Db::SORT_DESC)
-    ->limit(50);
-
-if ($ip !== '') {
-    if (filter_var($ip, FILTER_VALIDATE_IP)) {
-        $countrySelect->where('ip = ?', $ip);
-        $routeSelect->where('ip = ?', $ip);
-    } else {
-        $countrySelect->where('ip LIKE ?', '%' . $ip . '%');
-        $routeSelect->where('ip LIKE ?', '%' . $ip . '%');
-    }
-}
-
-$countryRows = $db->fetchAll($countrySelect);
-$routeRows = $db->fetchAll($routeSelect);
-
-$countryStats = [];
-foreach ($countryRows as $row) {
-    $countryStats[] = [
-        'country' => $row['country'],
-        'count' => (int)$row['count']
-    ];
-}
-
-$routeStats = [];
-foreach ($routeRows as $row) {
-    $routeStats[] = [
-        'route' => $row['route'],
-        'count' => (int)$row['count']
-    ];
-}
 ?>
 
 <script>
@@ -694,64 +705,126 @@ function initializeApp() {
             debugLog('❌ 主逻辑执行出错', e.message);
         }
 
-        // --- 7. 分页逻辑 (保持不变) ---
+        // --- 7. 分页逻辑：AJAX 翻页，避免整页刷新导致右侧图表重复加载 ---
         const paginationContainer = document.getElementById('pagination');
+        const logRowsContainer = document.getElementById('visitorLogRows');
+        let currentPage = <?php echo (int)$page; ?>;
+        let totalPages = <?php echo (int)$totalPages; ?>;
+        const ipQuery = <?php echo json_encode($ip, JSON_UNESCAPED_UNICODE); ?>;
+        let logsLoading = false;
+
+        function buildPaginationItems(page, pages) {
+            const maxPagesToShow = 5;
+            let items = [];
+            if (pages <= maxPagesToShow) {
+                for (let i = 1; i <= pages; i++) items.push(i);
+            } else {
+                let start = page - 2;
+                let end = page + 2;
+                if (start < 1) {
+                    end += 1 - start;
+                    start = 1;
+                }
+                if (end > pages) {
+                    start -= end - pages;
+                    end = pages;
+                }
+                if (start > 1) items.push(1, '...');
+                for (let i = start; i <= end; i++) items.push(i);
+                if (end < pages) items.push('...', pages);
+            }
+            return items;
+        }
+
+        function renderPagination(page, pages) {
+            if (!paginationContainer) return;
+            paginationContainer.innerHTML = '';
+            if (pages <= 1) return;
+
+            buildPaginationItems(page, pages).forEach(item => {
+                const li = document.createElement('li');
+                if (item === '...') {
+                    li.innerHTML = '<span>...</span>';
+                } else {
+                    const a = document.createElement('a');
+                    a.href = `?panel=VisitorLoggerPro%2Fpanel.php&page=${item}&ipQuery=${encodeURIComponent(ipQuery || '')}`;
+                    a.textContent = item;
+                    a.dataset.page = String(item);
+                    if (item === page) li.classList.add('current');
+                    a.addEventListener('click', function(e) {
+                        e.preventDefault();
+                        const target = parseInt(this.dataset.page, 10);
+                        if (!target || target === currentPage || logsLoading) return;
+                        loadLogsPage(target);
+                    });
+                    li.appendChild(a);
+                }
+                paginationContainer.appendChild(li);
+            });
+        }
+
+        function loadLogsPage(targetPage) {
+            if (!logRowsContainer || logsLoading) return;
+            logsLoading = true;
+            logRowsContainer.style.opacity = '0.5';
+
+            const url = `?panel=VisitorLoggerPro%2Fpanel.php&ajax=logs&page=${targetPage}&ipQuery=${encodeURIComponent(ipQuery || '')}`;
+            fetch(url, {
+                    method: 'GET',
+                    headers: {
+                        'X-Requested-With': 'XMLHttpRequest',
+                        'Cache-Control': 'no-cache'
+                    },
+                    credentials: 'same-origin'
+                })
+                .then(response => {
+                    if (!response.ok) throw new Error('HTTP ' + response.status);
+                    return response.json();
+                })
+                .then(data => {
+                    if (!data || !data.success) throw new Error((data && data.error) || '加载失败');
+                    logRowsContainer.innerHTML = data.html;
+                    currentPage = data.page;
+                    totalPages = data.totalPages;
+                    renderPagination(currentPage, totalPages);
+
+                    const nextUrl = `?panel=VisitorLoggerPro%2Fpanel.php&page=${currentPage}&ipQuery=${encodeURIComponent(ipQuery || '')}`;
+                    if (window.history && window.history.pushState) {
+                        window.history.pushState({
+                            page: currentPage
+                        }, '', nextUrl);
+                    }
+                    debugLog('✅ AJAX 翻页成功', {
+                        page: currentPage,
+                        totalPages: totalPages
+                    });
+                })
+                .catch(error => {
+                    debugLog('❌ AJAX 翻页失败，回退整页跳转', error.message);
+                    window.location.href = `?panel=VisitorLoggerPro%2Fpanel.php&page=${targetPage}&ipQuery=${encodeURIComponent(ipQuery || '')}`;
+                })
+                .finally(() => {
+                    logsLoading = false;
+                    if (logRowsContainer) logRowsContainer.style.opacity = '1';
+                });
+        }
+
         if (!paginationContainer) {
             debugLog('⚠️ 找不到分页容器');
         } else {
-            debugLog('处理分页逻辑');
-            try {
-                const currentPage = <?php echo $page; ?>;
-                const totalPages = <?php echo $totalPages; ?>;
-                const ipQuery = '<?php echo $ip; ?>';
+            debugLog('处理分页逻辑（AJAX）', {
+                current: currentPage,
+                total: totalPages,
+                query: ipQuery
+            });
+            renderPagination(currentPage, totalPages);
 
-                debugLog('分页信息', {
-                    current: currentPage,
-                    total: totalPages,
-                    query: ipQuery
-                });
-
-                if (totalPages > 1) {
-                    const maxPagesToShow = 5;
-                    let pagination = [];
-                    if (totalPages <= maxPagesToShow) {
-                        for (let i = 1; i <= totalPages; i++) pagination.push(i);
-                    } else {
-                        let start = currentPage - 2;
-                        let end = currentPage + 2;
-                        if (start < 1) {
-                            end += 1 - start;
-                            start = 1;
-                        }
-                        if (end > totalPages) {
-                            start -= end - totalPages;
-                            end = totalPages;
-                        }
-                        if (start > 1) pagination.push(1, '...');
-                        for (let i = start; i <= end; i++) pagination.push(i);
-                        if (end < totalPages) pagination.push('...', totalPages);
-                    }
-
-                    pagination.forEach(page => {
-                        const li = document.createElement('li');
-                        if (page === '...') {
-                            li.innerHTML = `<span>...</span>`;
-                        } else {
-                            const a = document.createElement('a');
-                            a.href = `?panel=VisitorLoggerPro%2Fpanel.php&page=${page}&ipQuery=${ipQuery}`;
-                            a.textContent = page;
-                            if (page === currentPage) li.classList.add('current');
-                            li.appendChild(a);
-                        }
-                        paginationContainer.appendChild(li);
-                    });
-                    debugLog('✅ 分页生成成功');
-                } else {
-                    debugLog('无需分页 (总页数 <= 1)');
+            window.addEventListener('popstate', function(event) {
+                const statePage = event.state && event.state.page ? parseInt(event.state.page, 10) : null;
+                if (statePage && statePage !== currentPage) {
+                    loadLogsPage(statePage);
                 }
-            } catch (e) {
-                debugLog('❌ 分页处理出错', e.message);
-            }
+            });
         }
     };
 </script>
@@ -1274,29 +1347,8 @@ function initializeApp() {
                                 <th>时间</th>
                             </tr>
                         </thead>
-                        <tbody>
-                            <?php if (empty($logs)): ?>
-                                <tr>
-                                    <td colspan="5">暂无记录</td>
-                                </tr>
-                            <?php else: ?>
-                                <?php foreach ($logs as $log): ?>
-                                    <tr>
-                                        <td><?php echo htmlspecialchars($log['ip']); ?></td>
-                                        <td><?php echo htmlspecialchars(urldecode($log['route'])); ?></td>
-                                        <td><?php echo htmlspecialchars($log['country']); ?></td>
-                                        <td title="<?php echo htmlspecialchars($log['user_agent'] ?? ''); ?>"><?php
-                                                                                                                $userAgent = $log['user_agent'] ?? '';
-                                                                                                                if (strlen($userAgent) > 50) {
-                                                                                                                    echo htmlspecialchars(substr($userAgent, 0, 50) . '...');
-                                                                                                                } else {
-                                                                                                                    echo htmlspecialchars($userAgent);
-                                                                                                                }
-                                                                                                                ?></td>
-                                        <td><?php echo htmlspecialchars($log['time']); ?></td>
-                                    </tr>
-                                <?php endforeach; ?>
-                            <?php endif; ?>
+                        <tbody id="visitorLogRows">
+                            <?php echo visitorLoggerPro_renderLogRows($logs); ?>
                         </tbody>
                     </table>
                     <div class="typecho-pager">
