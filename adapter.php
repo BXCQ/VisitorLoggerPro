@@ -10,35 +10,64 @@ if (!defined('__TYPECHO_ROOT_DIR__')) {
     exit;
 }
 
-// 处理已经加载的IP类
-if (class_exists('itbdw\\Ip\\IpLocation')) {
-    // 已经存在这个类，创建别名到我们的命名空间
+// 处理已经加载的IP类（目标别名已存在则跳过）
+if (class_exists('itbdw\\Ip\\IpLocation') && !class_exists('vlp\\Ip\\IpLocation', false)) {
     class_alias('itbdw\\Ip\\IpLocation', 'vlp\\Ip\\IpLocation');
 }
 
-// 如果 ipdbv6 类已存在，也创建别名
-if (class_exists('ipdbv6')) {
+if (class_exists('ipdbv6') && !class_exists('vlp\\Ip\\ipdbv6', false)) {
     class_alias('ipdbv6', 'vlp\\Ip\\ipdbv6');
 }
 
-// 如果 XdbSearcher 类已存在，也创建别名
-if (class_exists('ip2region\\XdbSearcher')) {
+if (class_exists('ip2region\\XdbSearcher') && !class_exists('vlp\\ip2region\\XdbSearcher', false)) {
     class_alias('ip2region\\XdbSearcher', 'vlp\\ip2region\\XdbSearcher');
 }
 
-/**
- * 安全创建类/接口别名（目标不存在或源已存在时跳过）
- *
- * @param string $from 真实类名
- * @param string $to   旧式别名
- */
-function vlp_safe_class_alias($from, $to)
-{
-    if (class_exists($to, false) || interface_exists($to, false) || trait_exists($to, false)) {
-        return;
+if (!function_exists('vlp_symbol_loaded')) {
+    /**
+     * 判断类/接口/Trait 是否已加载（不触发自动加载）
+     *
+     * @param string $name
+     * @return bool
+     */
+    function vlp_symbol_loaded($name)
+    {
+        return class_exists($name, false)
+            || interface_exists($name, false)
+            || trait_exists($name, false);
     }
-    if (class_exists($from, false) || interface_exists($from, false) || trait_exists($from, false)
-        || class_exists($from) || interface_exists($from)) {
+}
+
+if (!function_exists('vlp_safe_class_alias')) {
+    /**
+     * 安全创建类/接口别名（目标已存在则跳过）
+     *
+     * Typecho 1.2+/1.3 在自动加载命名空间类时会顺带注册旧式别名
+     *（如 Typecho_Plugin_Exception）。若先 class_exists($from) 再 class_alias，
+     * 目标名可能已在自动加载副作用中声明，需再次检查后再别名。
+     *
+     * @param string $from 真实类名
+     * @param string $to   旧式别名
+     */
+    function vlp_safe_class_alias($from, $to)
+    {
+        if (vlp_symbol_loaded($to)) {
+            return;
+        }
+
+        $fromExists = vlp_symbol_loaded($from)
+            || class_exists($from)
+            || interface_exists($from);
+
+        if (!$fromExists) {
+            return;
+        }
+
+        // 自动加载可能已由 Typecho 创建旧式别名，避免重复声明警告
+        if (vlp_symbol_loaded($to)) {
+            return;
+        }
+
         class_alias($from, $to);
     }
 }
@@ -70,7 +99,10 @@ vlp_safe_class_alias('\\Widget\\User', 'Widget_User');
 // 处理Helper类（1.3 为 Utils\Helper，Init 中会建别名；独立脚本场景需兜底）
 if (!class_exists('Helper', false)) {
     if (class_exists('\\Utils\\Helper')) {
-        class_alias('\\Utils\\Helper', 'Helper');
+        // Utils\Helper 自动加载后 Helper 别名可能已存在
+        if (!class_exists('Helper', false)) {
+            class_alias('\\Utils\\Helper', 'Helper');
+        }
     } elseif (class_exists('\\Typecho\\Helper')) {
         class Helper
         {

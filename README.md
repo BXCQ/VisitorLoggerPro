@@ -163,6 +163,11 @@ MIT License
 
 ## 更新日志
 
+### v2.2.11 (2026-08-15) - 适配器别名告警修复
+
+#### Bug 修复
+- **消除 `adapter.php` 重复声明告警**：Typecho 1.2+/1.3 自动加载命名空间类时会顺带创建旧式别名；适配器在 `class_exists` 后再 `class_alias` 会导致 `Cannot declare class ... already in use`。现于自动加载后再次检测目标符号，避免重复别名。
+
 ### v2.2.10 (2026-08-15) - Typecho 1.3.0 兼容版
 
 #### 兼容 Typecho 1.3.0
