@@ -9,7 +9,7 @@ if (!defined('__TYPECHO_ROOT_DIR__')) {
  * 
  * @package VisitorLoggerPro
  * @author 璇
- * @version 2.2.10
+ * @version 2.2.11
  * @link https://blog.ybyq.wang
  * @since 1.2.0
  */
