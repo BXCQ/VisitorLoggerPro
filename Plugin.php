@@ -9,7 +9,7 @@ if (!defined('__TYPECHO_ROOT_DIR__')) {
  * 
  * @package VisitorLoggerPro
  * @author 璇
- * @version 2.4.0
+ * @version 2.4.1
  * @link https://blog.ybyq.wang
  * @since 1.2.0
  */
@@ -18,6 +18,7 @@ if (!defined('__TYPECHO_ROOT_DIR__')) {
 require_once dirname(__FILE__) . '/adapter.php';
 require_once dirname(__FILE__) . '/DbOptimize.php';
 require_once dirname(__FILE__) . '/UmamiIdentity.php';
+require_once dirname(__FILE__) . '/BotFilter.php';
 
 require_once dirname(__FILE__) . '/ipdata/src/IpLocation.php';
 require_once dirname(__FILE__) . '/ipdata/src/ipdbv6.func.php';
@@ -288,7 +289,8 @@ class VisitorLoggerPro_Plugin implements Typecho_Plugin_Interface
             null,
             implode("\n", $bots),
             _t('蜘蛛过滤设置'),
-            _t('命中关键字的访问将不计入统计。格式：英文关键字=>显示名，每行一条。前端埋点模式下多数爬虫本就不会执行脚本，此列表作为服务端/采集接口的二次过滤。')
+            _t('命中关键字的访问将不计入统计。格式：英文关键字=>显示名，每行一条。<br>' .
+                '<strong>另有内置筛查（对齐 Umami isbot）：</strong>自动识别 Googlebot、curl、python、headless 等常见爬虫/自动化 UA；本列表作为额外补充。前端埋点模式下多数爬虫本就不会执行脚本。')
         );
 
         $form->addInput($botList);
@@ -372,26 +374,58 @@ class VisitorLoggerPro_Plugin implements Typecho_Plugin_Interface
 
 
     /**
-     * 蜘蛛记录函数
+     * 蜘蛛 / 非真实访客判定
+     * 1) 内置 isbot 规则（对齐 Umami）
+     * 2) 插件设置中的自定义 UA 关键字
      *
-     * @param mixed $rule
+     * @param string|null $userAgent 为空时从当前请求读取
      * @return boolean
      */
-    public static function isBot()
+    public static function isBot($userAgent = null)
     {
+        if ($userAgent === null) {
+            try {
+                $request = Typecho_Request::getInstance();
+                $userAgent = $request ? $request->getAgent() : ($_SERVER['HTTP_USER_AGENT'] ?? '');
+            } catch (Exception $e) {
+                $userAgent = $_SERVER['HTTP_USER_AGENT'] ?? '';
+            }
+        }
+
+        if (VisitorLoggerPro_BotFilter::isBotUa($userAgent)) {
+            return true;
+        }
+
         $botList = self::getBotsList();
-        $bot = NULL;
         if (count($botList) > 0) {
-            $request = Typecho_Request::getInstance();
-            $useragent = strtolower($request->getAgent());
+            $uaLower = strtolower((string)$userAgent);
             foreach ($botList as $key => $value) {
-                if (strpos($useragent, strval($key)) !== false) {
-                    $bot = $key;
+                $needle = strtolower(strval($key));
+                if ($needle !== '' && strpos($uaLower, $needle) !== false) {
                     return true;
                 }
             }
         }
         return false;
+    }
+
+    /**
+     * 已登录管理员是否应排除统计（README 承诺的「管理员访问自动排除」）
+     */
+    public static function isLoggedInAdministrator()
+    {
+        try {
+            if (class_exists('\\Widget\\User')) {
+                $user = \Widget\User::alloc();
+            } elseif (method_exists('Typecho_Widget', 'widget')) {
+                $user = Typecho_Widget::widget('Widget_User');
+            } else {
+                return false;
+            }
+            return $user && $user->hasLogin() && $user->pass('administrator', true);
+        } catch (Exception $e) {
+            return false;
+        }
     }
 
     /**
@@ -479,8 +513,14 @@ class VisitorLoggerPro_Plugin implements Typecho_Plugin_Interface
      */
     public static function recordVisit(array $data)
     {
-        if (self::isBot()) {
+        $userAgent = isset($data['user_agent']) ? (string)$data['user_agent'] : ($_SERVER['HTTP_USER_AGENT'] ?? '');
+
+        if (self::isBot($userAgent)) {
             return 'skipped_bot';
+        }
+
+        if (self::isLoggedInAdministrator()) {
+            return 'skipped_admin_user';
         }
 
         $route = isset($data['route']) ? (string)$data['route'] : '/';
@@ -511,7 +551,6 @@ class VisitorLoggerPro_Plugin implements Typecho_Plugin_Interface
 
         $location = self::getIpLocation($ip);
         $referrer = isset($data['referrer']) ? substr((string)$data['referrer'], 0, 512) : '';
-        $userAgent = isset($data['user_agent']) ? (string)$data['user_agent'] : ($_SERVER['HTTP_USER_AGENT'] ?? '');
 
         $mode = self::getTrackingMode();
         $assignUmami = !empty($data['assign_umami_ids']) || $mode === 'client' || $mode === 'hybrid';
@@ -661,12 +700,13 @@ class VisitorLoggerPro_Plugin implements Typecho_Plugin_Interface
         $options = Helper::options();
         $pluginUrl = rtrim($options->pluginUrl, '/') . '/VisitorLoggerPro';
         $endpoint = $pluginUrl . '/collect.php';
-        $scriptSrc = $pluginUrl . '/js/tracker.js?v=2.4.0';
+        $scriptSrc = $pluginUrl . '/js/tracker.js?v=2.4.1';
 
         echo "\n<!-- VisitorLoggerPro tracker (Umami-aligned) -->\n";
         echo '<script>window.__VLP_TRACKER__=' . json_encode(array(
             'endpoint' => $endpoint,
-            'mode' => $mode
+            'mode' => $mode,
+            'respectDnt' => true
         ), JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) . ';</script>' . "\n";
         echo '<script src="' . htmlspecialchars($scriptSrc, ENT_QUOTES, 'UTF-8') . '" defer></script>' . "\n";
     }

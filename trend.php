@@ -1257,9 +1257,9 @@ function initializeApp() {
                 <h4>🔧 技术实现要点</h4>
                 <ul>
                     <li><strong>推荐模式：</strong>插件设置选择「前端埋点」。算法对照开源 <a href="https://github.com/umami-software/umami" target="_blank" rel="noopener">Umami</a>（<code>/api/send</code> + tracker），<strong>不使用追踪 Cookie</strong></li>
+                    <li><strong>真实访客筛查：</strong>① 前端埋点要求执行 JS；② 服务端内置 <a href="https://github.com/omrilotan/isbot" target="_blank" rel="noopener">isbot</a> 规则（与 Umami 相同思路）过滤爬虫/自动化 UA；③ 可配置 UA 黑名单与忽略 IP；④ 已登录管理员不计入；⑤ 尊重浏览器 DNT / <code>localStorage.vlp.disabled</code></li>
                     <li><strong>字段映射：</strong><code>visitor_id</code> ← Umami sessionId（访客）；<code>session_id</code> ← Umami visitId（访问）；前端用 <code>X-VLP-Cache</code> 维持 visit（对齐 <code>x-umami-cache</code>）</li>
                     <li><strong>与第三方差异：</strong>自托管全量日志、不做抽样；广告拦截可能导致略低于百度统计等第三方脚本</li>
-                    <li><strong>爬虫过滤：</strong>前端模式天然过滤多数不执行 JS 的爬虫；服务端另有可配置 UA 黑名单</li>
                     <li><strong>兼容旧数据：</strong>升级前无身份字段的记录仍按 IP+UA / IP 间隔回退统计</li>
                     <li><strong>隐私：</strong>身份由服务端哈希生成，不写访客 Cookie、不跨站追踪；列表中的 IP 仍做匿名化展示</li>
                 </ul>

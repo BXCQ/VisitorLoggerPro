@@ -4,6 +4,7 @@
  * - 不写访客/会话 Cookie
  * - 仅上报页面元数据；身份由服务端按 IP+UA+月盐计算
  * - 用内存中的 cache token（对应 x-umami-cache）维持 30 分钟 visit
+ * - 尊重 DNT / localStorage 退出（对齐 Umami do-not-track / umami.disabled）
  */
 (function () {
   'use strict';
@@ -36,28 +37,43 @@
     return;
   }
 
+  function hasDoNotTrack() {
+    var dnt = navigator.doNotTrack || window.doNotTrack || navigator.msDoNotTrack;
+    return dnt === 1 || dnt === '1' || dnt === 'yes';
+  }
+
+  function trackingDisabled() {
+    try {
+      if (window.localStorage && localStorage.getItem('vlp.disabled')) {
+        return true;
+      }
+    } catch (e) {
+      /* private mode */
+    }
+    if (cfg.respectDnt !== false && hasDoNotTrack()) {
+      return true;
+    }
+    return false;
+  }
+
   log('埋点脚本已加载（Umami 口径）', {
     mode: cfg.mode || 'unknown',
     endpoint: endpoint,
-    page: location.href
+    page: location.href,
+    dnt: hasDoNotTrack()
   });
 
-  function normalizePath() {
-    return (location.pathname || '/') + (location.search || '');
-  }
-
-  function shouldSkip() {
+  function shouldSkipPath() {
     var path = location.pathname || '/';
     return path.indexOf('/admin') === 0 || path.indexOf('/usr/plugins') !== -1;
   }
 
   function getPayload() {
-    if (shouldSkip()) {
+    if (shouldSkipPath()) {
       return null;
     }
     var origin = location.origin || '';
     var ref = document.referrer || '';
-    // 同源 referrer 去掉 origin（对齐 Umami stripOrigin）
     if (origin && (ref === origin || ref.indexOf(origin + '/') === 0)) {
       ref = ref.slice(origin.length);
     }
@@ -128,7 +144,10 @@
   }
 
   function track() {
-    // hybrid：服务端已按 Umami 口径写日志，前端不再 beacon，避免双计
+    if (trackingDisabled()) {
+      log('已跳过：DNT 或 localStorage vlp.disabled');
+      return;
+    }
     if (cfg.mode === 'hybrid') {
       log('hybrid 模式：由服务端按 Umami 口径记日志，前端不上报');
       return;
