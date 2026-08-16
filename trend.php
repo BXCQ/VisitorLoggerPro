@@ -1203,8 +1203,8 @@ function initializeApp() {
                     <div class="metric-content">
                         <h4>PV (页面浏览量)</h4>
                         <div class="metric-description">
-                            <p><strong>概念：</strong>Page View，每次页面被成功统计一次记为一次浏览。</p>
-                            <p><strong>统计方法：</strong>日志表记录总数。启用「前端埋点」后，通常只有执行了 JS 的真实浏览器才会上报，口径接近 Umami / Matomo / 百度统计。</p>
+                            <p><strong>概念：</strong>对应 Umami 的 <code>pageviews</code>，每次成功记入的一次页面浏览。</p>
+                            <p><strong>统计方法：</strong><code>COUNT(*)</code>。启用「前端埋点」后由浏览器上报，不执行 JS 的爬虫通常不计（对齐 Umami tracker）。</p>
                             <p><strong>获取数据：</strong><code>SELECT COUNT(*) FROM visitor_log WHERE time BETWEEN ? AND ?</code></p>
                         </div>
                     </div>
@@ -1217,8 +1217,8 @@ function initializeApp() {
                     <div class="metric-content">
                         <h4>独立IP数</h4>
                         <div class="metric-description">
-                            <p><strong>概念：</strong>指定时间范围内访问过网站的不同IP地址数量，同一IP在统计周期内只计算一次。</p>
-                            <p><strong>统计方法：</strong>按IP地址去重统计。此指标仍基于网络地址，与主流工具的「访客」不是同一概念。</p>
+                            <p><strong>概念：</strong>指定时间范围内不同 IP 地址数量（本插件附加指标，Umami 面板无直接对应项）。</p>
+                            <p><strong>统计方法：</strong>按 IP 去重。同一公网 NAT 下的多人会合并；同一人换网络会拆分，故<strong>不等于</strong>访客数(UV)。</p>
                             <p><strong>获取数据：</strong><code>SELECT COUNT(DISTINCT ip) FROM visitor_log WHERE time BETWEEN ? AND ?</code></p>
                         </div>
                     </div>
@@ -1231,9 +1231,9 @@ function initializeApp() {
                     <div class="metric-content">
                         <h4>独立访客数 (UV)</h4>
                         <div class="metric-description">
-                            <p><strong>概念：</strong>对应 Umami 的 <code>visitors</code>（COUNT DISTINCT session_id）。</p>
-                            <p><strong>统计方法：</strong>服务端用 <code>IP + User-Agent + 月盐</code> 生成确定性 visitor_id（对照 Umami <code>/api/send</code>）；旧数据无该字段时回退 IP+UA。</p>
-                            <p><strong>获取数据：</strong><code>COUNT(DISTINCT visitor_id)</code>（legacy 回退见 API）</p>
+                            <p><strong>概念：</strong>对应 Umami 的 <code>visitors</code>（<code>COUNT DISTINCT session_id</code>）。</p>
+                            <p><strong>统计方法：</strong>服务端计算 <code>visitor_id = hash(站点, IP, User-Agent, 月盐)</code>（对照 Umami <code>/api/send</code>）；盐按月轮换。旧数据无该字段时回退 IP+UA。</p>
+                            <p><strong>获取数据：</strong><code>COUNT(DISTINCT visitor_id)</code>（本字段即 Umami sessionId；legacy 回退见 API）</p>
                         </div>
                     </div>
                 </div>
@@ -1245,8 +1245,8 @@ function initializeApp() {
                     <div class="metric-content">
                         <h4>访问次数 (会话数)</h4>
                         <div class="metric-description">
-                            <p><strong>概念：</strong>对应 Umami 的 <code>visits</code>（COUNT DISTINCT visit_id）。</p>
-                            <p><strong>统计方法：</strong>同一 visitor 在 30 分钟无活动后视为新 visit（对照 Umami <code>iat &gt; 1800</code>）；旧数据无 session_id 时按同一 IP 间隔超过 30 分钟切分。</p>
+                            <p><strong>概念：</strong>对应 Umami 的 <code>visits</code>（<code>COUNT DISTINCT visit_id</code>）。</p>
+                            <p><strong>统计方法：</strong>本插件 <code>session_id</code> 即 Umami visitId；同一 visitor 超过 30 分钟无活动后开启新 visit（对照 <code>iat &gt; 1800</code>）。旧数据无该字段时按同一 IP 间隔 &gt;30 分钟切分。</p>
                             <p><strong>获取数据：</strong><code>COUNT(DISTINCT session_id)</code> + 旧数据窗口函数回退</p>
                         </div>
                     </div>
@@ -1256,11 +1256,12 @@ function initializeApp() {
             <div class="technical-notes">
                 <h4>🔧 技术实现要点</h4>
                 <ul>
-                    <li><strong>推荐模式：</strong>插件设置中选择「前端埋点」，即可按 Umami / Matomo 思路用 Cookie 识别访客与会话</li>
-                    <li><strong>与主流工具差异：</strong>本插件仍自托管日志，不做抽样；广告拦截可能导致略低于百度统计等第三方脚本</li>
-                    <li><strong>爬虫过滤：</strong>前端模式天然过滤多数不执行 JS 的爬虫，服务端另有可配置 UA 黑名单</li>
-                    <li><strong>兼容旧数据：</strong>历史 IP+UA 记录仍可统计，会与 Cookie 口径自动合并回退</li>
-                    <li><strong>隐私：</strong>使用第一方 Cookie，不跨站追踪；IP 展示仍做匿名化</li>
+                    <li><strong>推荐模式：</strong>插件设置选择「前端埋点」。算法对照开源 <a href="https://github.com/umami-software/umami" target="_blank" rel="noopener">Umami</a>（<code>/api/send</code> + tracker），<strong>不使用追踪 Cookie</strong></li>
+                    <li><strong>字段映射：</strong><code>visitor_id</code> ← Umami sessionId（访客）；<code>session_id</code> ← Umami visitId（访问）；前端用 <code>X-VLP-Cache</code> 维持 visit（对齐 <code>x-umami-cache</code>）</li>
+                    <li><strong>与第三方差异：</strong>自托管全量日志、不做抽样；广告拦截可能导致略低于百度统计等第三方脚本</li>
+                    <li><strong>爬虫过滤：</strong>前端模式天然过滤多数不执行 JS 的爬虫；服务端另有可配置 UA 黑名单</li>
+                    <li><strong>兼容旧数据：</strong>升级前无身份字段的记录仍按 IP+UA / IP 间隔回退统计</li>
+                    <li><strong>隐私：</strong>身份由服务端哈希生成，不写访客 Cookie、不跨站追踪；列表中的 IP 仍做匿名化展示</li>
                 </ul>
             </div>
         </div>
