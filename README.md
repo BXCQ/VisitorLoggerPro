@@ -14,12 +14,12 @@
 
 ### 数据统计功能
 - **三种统计模式**：
-  - **前端埋点（推荐）**：第一方 Cookie 识别访客/会话，口径接近 Umami、Matomo、百度统计、51LA
-  - **混合模式**：服务端记日志，同时用 Cookie 标识 UV/会话
-  - **仅服务端**：旧版 IP+UA 口径（兼容历史行为）
+  - **前端埋点（推荐）**：对照 [Umami](https://github.com/umami-software/umami) 开源实现——浏览器只上报页面元数据，服务端按 IP+UA+月盐识别访客、按 30 分钟 visit 识别访问；**不使用追踪 Cookie**
+  - **混合模式**：服务端直接按同一套 Umami 算法写 visitor_id / session_id
+  - **仅服务端**：旧版简易 IP+UA 口径（兼容历史行为）
 - **四项核心指标**：PV(页面浏览量)、独立IP数、独立访客数(UV)、访问次数(会话数)
-- **主流会话口径**：30 分钟滚动会话 Cookie（session_id）
-- **主流访客口径**：一年期访客 Cookie（visitor_id）；旧数据自动回退 IP+User-Agent
+- **Umami 访客口径**：`visitor_id` = Umami `sessionId`（IP + UA + 月盐，按月轮换）
+- **Umami 访问口径**：`session_id` = Umami `visitId`（30 分钟无活动超时）；旧数据自动回退 IP 间隔算法
 - 访问国家/地区统计（Top 30）
 - IP分布统计（已匿名化处理）
 - 省份访问统计图表
@@ -116,14 +116,14 @@
 
 | 选项 | 说明 | 默认 |
 |------|------|------|
-| **统计模式** | `前端埋点` / `混合` / `仅服务端`。推荐「前端埋点」以接近主流工具口径 | 表单默认前端埋点；**未保存过配置的旧站运行时仍按仅服务端** |
+| **统计模式** | `前端埋点` / `混合` / `仅服务端`。推荐「前端埋点」对齐 Umami 开源口径 | 表单默认前端埋点；**未保存过配置的旧站运行时仍按仅服务端** |
 | 蜘蛛过滤设置 | 按格式配置爬虫 UA 关键字，命中则不记入 | 内置常见搜索引擎与爬虫 |
 | 忽略的IP地址 | 不记录的 IP（支持精确 / 通配符 / CIDR） | 空 |
 | IPV4数据库选项 | `纯真` 或 `ip2region` | 纯真 |
 | 启用访客统计 | 是否启用统计功能 | 启用 |
 | **禁用时删除数据表** | 开关：开启后禁用插件会删除 `visitor_log` 表及全部记录 | **关闭（保留数据）** |
 
-> **升级提示（2.3.x）**：在设置中选择「前端埋点」并保存即可。脚本会由插件自动注入到页面（搜索 `tracker.js`），**无需**手动改主题 head。若源码中完全没有，请确认主题输出了 `$this->header()`；仍异常时可禁用再启用插件一次。
+> **升级提示（2.4.x）**：在设置中选择「前端埋点」并保存即可。脚本会由插件自动注入（搜索 `tracker.js`），**无需**手动改主题。身份标识改为服务端按 Umami 算法计算，不再依赖 `_vlp_uid` / `_vlp_sid` Cookie。若源码中完全没有脚本，请确认主题输出了 `$this->header()`。
 
 ### 后台面板
 
@@ -151,11 +151,12 @@ Typecho 1.3.0 后台布局不协调：
 
 ## 技术实现
 
-- 前端：ECharts 图表库，支持四条曲线同时展示
-- 后端：PHP + MySQL，支持SQL窗口函数优化
-- 数据存储：Typecho 数据库，扩展user_agent字段
+- 前端：ECharts 图表库；埋点脚本对照 Umami tracker（只上报元数据 + cache token）
+- 后端：PHP + MySQL；身份算法对照 Umami `/api/send`（`UmamiIdentity.php`）
+- 数据存储：Typecho 数据库；`visitor_id`/`session_id` 对应 Umami `sessionId`/`visitId`
 - 数据处理：通过API异步加载，支持PV、UV、IP、会话四项指标
-- 会话算法：基于时间间隔的智能会话识别（30分钟超时）
+- 访客算法：IP + User-Agent + 月盐（按月轮换，与 Umami 默认一致）
+- 访问算法：30 分钟无活动超时（`iat > 1800`）
 - 兼容性：自动检测MySQL版本，智能回退到简化算法
 - Typecho 适配：`adapter.php` 兼容 1.2 旧类名与 1.3 命名空间（`PluginInterface` / `ActionInterface` / `Utils\Helper` 等）
 
@@ -170,6 +171,15 @@ Typecho 1.3.0 后台布局不协调：
 MIT License
 
 ## 更新日志
+
+### v2.4.0 (2026-08-16) - 对齐 Umami 开源口径
+
+#### 统计口径（对照 [umami-software/umami](https://github.com/umami-software/umami)）
+- **取消 Cookie 访客/会话标识**：不再使用 `_vlp_uid` / `_vlp_sid`（此前误称为 Umami 口径）
+- **访客（UV）**：服务端 `visitor_id = hash(站点, IP, UA, 月盐)`，对应 Umami `sessionId` / `visitors`
+- **访问（会话）**：`session_id` 为 30 分钟超时的 visit，对应 Umami `visitId` / `visits`；前端用 `X-VLP-Cache` 维持 visit（对齐 `x-umami-cache`）
+- **前端埋点**：只上报 url/referrer/title 等元数据，身份全部服务端计算
+- **混合模式**：服务端直接套用同一算法，前端不再 beacon
 
 ### v2.2.11 (2026-08-15) - 适配器别名告警修复
 
