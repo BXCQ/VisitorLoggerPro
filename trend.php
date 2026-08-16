@@ -1231,9 +1231,9 @@ function initializeApp() {
                     <div class="metric-content">
                         <h4>独立访客数 (UV)</h4>
                         <div class="metric-description">
-                            <p><strong>概念：</strong>Unique Visitor。前端埋点模式下使用一年期第一方 Cookie（visitor_id），与 Umami / Matomo / 百度统计同类。</p>
-                            <p><strong>统计方法：</strong>优先 <code>COUNT(DISTINCT visitor_id)</code>；旧数据无 Cookie 时回退为 IP+User-Agent。</p>
-                            <p><strong>获取数据：</strong><code>COALESCE(visitor_id, CONCAT('legacy:', ip, user_agent))</code> 去重</p>
+                            <p><strong>概念：</strong>对应 Umami 的 <code>visitors</code>（COUNT DISTINCT session_id）。</p>
+                            <p><strong>统计方法：</strong>服务端用 <code>IP + User-Agent + 月盐</code> 生成确定性 visitor_id（对照 Umami <code>/api/send</code>）；旧数据无该字段时回退 IP+UA。</p>
+                            <p><strong>获取数据：</strong><code>COUNT(DISTINCT visitor_id)</code>（legacy 回退见 API）</p>
                         </div>
                     </div>
                 </div>
@@ -1245,8 +1245,8 @@ function initializeApp() {
                     <div class="metric-content">
                         <h4>访问次数 (会话数)</h4>
                         <div class="metric-description">
-                            <p><strong>概念：</strong>Session。前端埋点使用 30 分钟滚动会话 Cookie（session_id），与主流工具常见 30 分钟超时一致。</p>
-                            <p><strong>统计方法：</strong>优先按 session_id 去重；旧数据无会话 Cookie 时，按同一 IP 间隔超过 30 分钟切分会话。</p>
+                            <p><strong>概念：</strong>对应 Umami 的 <code>visits</code>（COUNT DISTINCT visit_id）。</p>
+                            <p><strong>统计方法：</strong>同一 visitor 在 30 分钟无活动后视为新 visit（对照 Umami <code>iat &gt; 1800</code>）；旧数据无 session_id 时按同一 IP 间隔超过 30 分钟切分。</p>
                             <p><strong>获取数据：</strong><code>COUNT(DISTINCT session_id)</code> + 旧数据窗口函数回退</p>
                         </div>
                     </div>

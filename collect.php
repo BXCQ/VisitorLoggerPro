@@ -1,6 +1,7 @@
 <?php
 /**
- * 前端埋点采集接口（Umami / Matomo 风格第一方 Cookie 统计）
+ * 前端埋点采集接口
+ * 对照 Umami src/app/api/send/route.ts：服务端计算 session/visit，前端只传页面元数据
  */
 
 error_reporting(E_ERROR | E_PARSE);
@@ -16,7 +17,7 @@ header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
 
 if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
     header('Access-Control-Allow-Methods: POST, OPTIONS');
-    header('Access-Control-Allow-Headers: Content-Type');
+    header('Access-Control-Allow-Headers: Content-Type, X-VLP-Cache');
     ob_end_clean();
     http_response_code(204);
     exit;
@@ -50,6 +51,7 @@ if (!class_exists('Typecho_Db') && !class_exists('\\Typecho\\Db')) {
 }
 
 require_once dirname(__FILE__) . '/adapter.php';
+require_once dirname(__FILE__) . '/UmamiIdentity.php';
 require_once dirname(__FILE__) . '/Plugin.php';
 
 try {
@@ -73,39 +75,40 @@ try {
         throw new Exception('invalid_json');
     }
 
-    $visitorId = isset($data['visitor_id']) ? trim((string)$data['visitor_id']) : '';
-    $sessionId = isset($data['session_id']) ? trim((string)$data['session_id']) : '';
-    $route = isset($data['route']) ? (string)$data['route'] : '/';
-    $referrer = isset($data['referrer']) ? (string)$data['referrer'] : '';
+    // 兼容 {type,payload}（Umami）与扁平字段
+    $payload = isset($data['payload']) && is_array($data['payload']) ? $data['payload'] : $data;
 
-    if (!preg_match('/^[a-f0-9-]{8,64}$/i', $visitorId) || !preg_match('/^[a-f0-9-]{8,64}$/i', $sessionId)) {
-        throw new Exception('invalid_ids');
+    $route = isset($payload['route']) ? (string)$payload['route'] : '';
+    if ($route === '' && !empty($payload['url'])) {
+        $parts = parse_url((string)$payload['url']);
+        $route = isset($parts['path']) ? $parts['path'] : '/';
     }
-
-    $route = explode('?', $route)[0];
-    $route = substr($route, 0, 255);
     if ($route === '') {
         $route = '/';
     }
+    $route = explode('?', $route)[0];
+    $route = substr($route, 0, 255);
     if (stripos($route, 'admin') !== false) {
         ob_end_clean();
         echo json_encode(['ok' => true, 'skipped' => 'admin']);
         exit;
     }
 
-    $referrer = substr($referrer, 0, 512);
+    $referrer = isset($payload['referrer']) ? substr((string)$payload['referrer'], 0, 512) : '';
+    $cacheHeader = $_SERVER['HTTP_X_VLP_CACHE'] ?? '';
 
     $result = VisitorLoggerPro_Plugin::recordVisit(array(
         'route' => $route,
-        'visitor_id' => $visitorId,
-        'session_id' => $sessionId,
         'referrer' => $referrer,
         'user_agent' => $_SERVER['HTTP_USER_AGENT'] ?? '',
-        'source' => 'client'
+        'cache_token' => $cacheHeader,
+        'source' => 'client',
+        'assign_umami_ids' => true
     ));
 
+    $ids = is_array($result) ? $result : array('result' => $result);
     ob_end_clean();
-    echo json_encode(['ok' => true, 'result' => $result], JSON_UNESCAPED_UNICODE);
+    echo json_encode(array_merge(['ok' => true], $ids), JSON_UNESCAPED_UNICODE);
 } catch (Exception $e) {
     ob_end_clean();
     http_response_code(400);

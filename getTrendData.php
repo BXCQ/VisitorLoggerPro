@@ -122,8 +122,8 @@ try {
 }
 
 /**
- * 计算会话数
- * - 有 session_id：按 Cookie 会话去重（主流口径）
+ * 计算会话数（对齐 Umami visits = COUNT DISTINCT visit_id）
+ * - 有 session_id：按 visitId 去重
  * - 无 session_id 的旧数据：同一 IP 间隔 >30 分钟视为新会话
  */
 function calculateSessions($db, $prefix, $whereClause, $hasIdentity = false)
@@ -248,7 +248,8 @@ function calculateSessionsGrouped($db, $prefix, $whereClause, $groupExpr, $hasId
 }
 
 /**
- * UV 表达式：优先 Cookie visitor_id，旧数据回退 IP+UA
+ * UV 表达式：对齐 Umami visitors = COUNT DISTINCT session_id
+ * 本插件 visitor_id 即 Umami sessionId；旧数据回退 IP+UA
  */
 function uniqueVisitorExpr($hasIdentity)
 {
@@ -424,8 +425,8 @@ function getTrendData($db, $prefix, $startDate, $endDate)
             ],
             'method' => [
                 'identity_columns' => $hasIdentity,
-                'uv' => $hasIdentity ? 'cookie_visitor_id_with_legacy_fallback' : 'ip_user_agent',
-                'session' => $hasIdentity ? 'cookie_session_id_with_legacy_fallback' : 'ip_gap_30m'
+                'uv' => $hasIdentity ? 'umami_session_id_ip_ua_month_salt' : 'ip_user_agent',
+                'session' => $hasIdentity ? 'umami_visit_id_30m' : 'ip_gap_30m'
             ]
         ];
     } catch (Exception $e) {

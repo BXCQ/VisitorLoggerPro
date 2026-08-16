@@ -9,7 +9,7 @@ if (!defined('__TYPECHO_ROOT_DIR__')) {
  * 
  * @package VisitorLoggerPro
  * @author 璇
- * @version 2.3.2
+ * @version 2.4.0
  * @link https://blog.ybyq.wang
  * @since 1.2.0
  */
@@ -17,6 +17,7 @@ if (!defined('__TYPECHO_ROOT_DIR__')) {
 // 加载兼容适配器
 require_once dirname(__FILE__) . '/adapter.php';
 require_once dirname(__FILE__) . '/DbOptimize.php';
+require_once dirname(__FILE__) . '/UmamiIdentity.php';
 
 require_once dirname(__FILE__) . '/ipdata/src/IpLocation.php';
 require_once dirname(__FILE__) . '/ipdata/src/ipdbv6.func.php';
@@ -120,7 +121,7 @@ class VisitorLoggerPro_Plugin implements Typecho_Plugin_Interface
         Helper::addPanel(1, 'VisitorLoggerPro/panel.php', '访客日志', '查看访客日志', 'administrator');
         Helper::addPanel(2, 'VisitorLoggerPro/trend.php', '趋势分析', '访客趋势分析', 'administrator');
 
-        return '插件已激活，访客日志功能已启用。请在设置中选择「前端埋点」以获得接近主流统计工具的口径。';
+        return '插件已激活，访客日志功能已启用。请在设置中选择「前端埋点」以对齐 Umami 开源口径。';
     }
 
     /**
@@ -227,20 +228,20 @@ class VisitorLoggerPro_Plugin implements Typecho_Plugin_Interface
      */
     public static function config(Typecho_Widget_Helper_Form $form)
     {
-        /* 统计模式：接近 Umami / Matomo / 百度统计 */
+        /* 统计模式：对齐 Umami 开源实现 */
         $trackingMode = new Typecho_Widget_Helper_Form_Element_Radio(
             'trackingMode',
             array(
-                'client' => _t('前端埋点（推荐，接近 Umami / Matomo / 百度统计）'),
-                'hybrid' => _t('混合：服务端记录 + 前端 Cookie 标识'),
-                'server' => _t('仅服务端（旧版 IP+UA 口径）')
+                'client' => _t('前端埋点（推荐，对齐 Umami）'),
+                'hybrid' => _t('混合：服务端按 Umami 口径记日志'),
+                'server' => _t('仅服务端（旧版简易 IP+UA，无月盐/visit）')
             ),
             'client',
             _t('统计模式'),
-            _t('前端埋点：通过第一方 Cookie 识别访客与会话，不执行 JS 的爬虫通常不会被计入，口径更接近主流工具。<br>' .
-                '混合：服务端仍记日志，同时写入 Cookie 中的 visitor_id / session_id（由页脚脚本维护 Cookie，不重复上报）。<br>' .
-                '仅服务端：保持旧行为。升级后若未保存过本选项，运行时仍按「仅服务端」以免突然改口径；建议保存一次并选用「前端埋点」。<br>' .
-                '<strong>说明：</strong>脚本由插件自动注入（header 钩子），无需手动改主题。页面源码中搜索 <code>VisitorLoggerPro tracker</code> 或 <code>tracker.js</code> 即可确认。若仍没有，请确认已保存为「前端埋点/混合」，并确认主题调用了 <code>$this->header()</code>。')
+            _t('前端埋点：对照 <a href="https://github.com/umami-software/umami" target="_blank" rel="noopener">Umami</a> 源码——浏览器只上报页面元数据，服务端用 IP+UA+月盐生成 visitor（Umami sessionId），用 30 分钟超时生成 visit（Umami visitId）；不执行 JS 的爬虫通常不计。<br>' .
+                '混合：服务端直接按同一套 Umami 算法写 visitor_id / session_id（不依赖 Cookie），前端不上报以免双计。<br>' .
+                '仅服务端：保持更旧的行为回退。升级后若未保存过本选项，运行时仍按「仅服务端」；建议保存并选用「前端埋点」。<br>' .
+                '<strong>说明：</strong>脚本由插件自动注入（header 钩子）。源码中搜索 <code>VisitorLoggerPro tracker</code> 即可确认。')
         );
         $form->addInput($trackingMode);
 
@@ -471,8 +472,10 @@ class VisitorLoggerPro_Plugin implements Typecho_Plugin_Interface
     /**
      * 统一写入访问记录（服务端钩子与前端 collect 共用）
      *
+     * 对齐 Umami：visitor_id = sessionId(IP+UA+月盐)，session_id = visitId(30 分钟)
+     *
      * @param array $data
-     * @return string skipped|recorded
+     * @return string|array skipped 字符串，或 recorded 时含 cache/visitor_id/session_id
      */
     public static function recordVisit(array $data)
     {
@@ -507,17 +510,21 @@ class VisitorLoggerPro_Plugin implements Typecho_Plugin_Interface
         self::ensureSchema($db, $prefix);
 
         $location = self::getIpLocation($ip);
-        $visitorId = isset($data['visitor_id']) ? substr(trim((string)$data['visitor_id']), 0, 64) : '';
-        $sessionId = isset($data['session_id']) ? substr(trim((string)$data['session_id']), 0, 64) : '';
         $referrer = isset($data['referrer']) ? substr((string)$data['referrer'], 0, 512) : '';
         $userAgent = isset($data['user_agent']) ? (string)$data['user_agent'] : ($_SERVER['HTTP_USER_AGENT'] ?? '');
 
-        // hybrid / server：若请求已带 Cookie，优先写入 Cookie 标识
-        if ($visitorId === '' && !empty($_COOKIE['_vlp_uid'])) {
-            $visitorId = substr(trim((string)$_COOKIE['_vlp_uid']), 0, 64);
-        }
-        if ($sessionId === '' && !empty($_COOKIE['_vlp_sid'])) {
-            $sessionId = substr(trim((string)$_COOKIE['_vlp_sid']), 0, 64);
+        $mode = self::getTrackingMode();
+        $assignUmami = !empty($data['assign_umami_ids']) || $mode === 'client' || $mode === 'hybrid';
+
+        $visitorId = '';
+        $sessionId = '';
+        $cacheToken = null;
+
+        if ($assignUmami) {
+            $ids = self::assignUmamiIdentity($db, $prefix, $ip, $userAgent, isset($data['cache_token']) ? (string)$data['cache_token'] : '');
+            $visitorId = $ids['visitor_id'];
+            $sessionId = $ids['session_id'];
+            $cacheToken = $ids['cache'];
         }
 
         $rows = array(
@@ -541,7 +548,66 @@ class VisitorLoggerPro_Plugin implements Typecho_Plugin_Interface
             $db->query($db->insert('table.visitor_log')->rows($rows));
         }
 
-        return 'recorded';
+        return array(
+            'result' => 'recorded',
+            'visitor_id' => $visitorId !== '' ? $visitorId : null,
+            'session_id' => $sessionId !== '' ? $sessionId : null,
+            'cache' => $cacheToken
+        );
+    }
+
+    /**
+     * 按 Umami /api/send 规则分配 visitor_id / session_id
+     *
+     * @return array{visitor_id:string,session_id:string,cache:?string}
+     */
+    private static function assignUmamiIdentity($db, $prefix, $ip, $userAgent, $cacheToken = '')
+    {
+        $now = time();
+        $visitorId = VisitorLoggerPro_UmamiIdentity::makeVisitorId(
+            VisitorLoggerPro_UmamiIdentity::websiteKey(),
+            $ip,
+            $userAgent,
+            $now
+        );
+
+        $cache = VisitorLoggerPro_UmamiIdentity::decodeCache($cacheToken);
+        if ($cache === null) {
+            // 无前端 cache 时（hybrid / 首访）：查 30 分钟内同 visitor 最近一条 visit
+            try {
+                $since = date('Y-m-d H:i:s', $now - VisitorLoggerPro_UmamiIdentity::VISIT_TIMEOUT);
+                $row = $db->fetchRow(
+                    $db->select('session_id', 'time')
+                        ->from($prefix . 'visitor_log')
+                        ->where('visitor_id = ?', $visitorId)
+                        ->where('time >= ?', $since)
+                        ->where('session_id IS NOT NULL')
+                        ->where('session_id != ?', '')
+                        ->order('time', Typecho_Db::SORT_DESC)
+                        ->limit(1)
+                );
+                if ($row && !empty($row['session_id'])) {
+                    $iat = strtotime($row['time']);
+                    if ($iat === false) {
+                        $iat = $now;
+                    }
+                    $cache = array(
+                        'visitor_id' => $visitorId,
+                        'session_id' => (string)$row['session_id'],
+                        'iat' => $iat
+                    );
+                }
+            } catch (Exception $e) {
+                $cache = null;
+            }
+        }
+
+        $resolved = VisitorLoggerPro_UmamiIdentity::resolveVisit($visitorId, $cache, $now);
+        return array(
+            'visitor_id' => $resolved['visitor_id'],
+            'session_id' => $resolved['session_id'],
+            'cache' => VisitorLoggerPro_UmamiIdentity::encodeCache($resolved)
+        );
     }
 
     public static function logVisitorInfo($header = null, $archive = null)
@@ -586,7 +652,7 @@ class VisitorLoggerPro_Plugin implements Typecho_Plugin_Interface
         }
 
         $mode = self::getTrackingMode();
-        if ($mode !== 'client' && $mode !== 'hybrid') {
+        if ($mode !== 'client') {
             return;
         }
 
@@ -595,9 +661,9 @@ class VisitorLoggerPro_Plugin implements Typecho_Plugin_Interface
         $options = Helper::options();
         $pluginUrl = rtrim($options->pluginUrl, '/') . '/VisitorLoggerPro';
         $endpoint = $pluginUrl . '/collect.php';
-        $scriptSrc = $pluginUrl . '/js/tracker.js?v=2.3.2';
+        $scriptSrc = $pluginUrl . '/js/tracker.js?v=2.4.0';
 
-        echo "\n<!-- VisitorLoggerPro tracker -->\n";
+        echo "\n<!-- VisitorLoggerPro tracker (Umami-aligned) -->\n";
         echo '<script>window.__VLP_TRACKER__=' . json_encode(array(
             'endpoint' => $endpoint,
             'mode' => $mode
