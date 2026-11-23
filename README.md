@@ -26,6 +26,7 @@
 - 路由访问统计分析（页面访问量统计）
 - 访问时间统计（按日期分布）
 - 管理员访问自动排除
+- **真实访客筛查**：内置 isbot 规则（对齐 Umami）+ 可配置 UA 黑名单 + 忽略 IP + DNT
 - 可配置爬虫 UA 过滤（默认名单已扩充）
 
 ### 数据筛选功能
@@ -180,6 +181,12 @@ MIT License
 - **访问（会话）**：`session_id` 为 30 分钟超时的 visit，对应 Umami `visitId` / `visits`；前端用 `X-VLP-Cache` 维持 visit（对齐 `x-umami-cache`）
 - **前端埋点**：只上报 url/referrer/title 等元数据，身份全部服务端计算
 - **混合模式**：服务端直接套用同一算法，前端不再 beacon
+
+#### 真实访客筛查（v2.4.1）
+- **内置 isbot 规则**：移植 [omrilotan/isbot](https://github.com/omrilotan/isbot) 模式库，对齐 Umami `isbot(userAgent)`
+- **管理员排除**：已登录管理员访问不再写入日志
+- **DNT / 退出**：尊重浏览器 Do Not Track；`localStorage.setItem('vlp.disabled','1')` 可本地关闭埋点
+- 仍支持插件设置中的自定义 UA 黑名单与忽略 IP
 
 ### v2.2.11 (2026-08-15) - 适配器别名告警修复
 

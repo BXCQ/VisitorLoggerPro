@@ -52,6 +52,7 @@ if (!class_exists('Typecho_Db') && !class_exists('\\Typecho\\Db')) {
 
 require_once dirname(__FILE__) . '/adapter.php';
 require_once dirname(__FILE__) . '/UmamiIdentity.php';
+require_once dirname(__FILE__) . '/BotFilter.php';
 require_once dirname(__FILE__) . '/Plugin.php';
 
 try {
